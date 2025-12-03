@@ -2,8 +2,8 @@ package pulsar
 
 import (
 	"fmt"
-	"github.com/go-lynx/lynx/app"
-	"github.com/go-lynx/lynx/app/factory"
+	"github.com/go-lynx/lynx"
+	"github.com/go-lynx/lynx/pkg/factory"
 	"github.com/go-lynx/lynx/plugins"
 )
 
@@ -29,7 +29,7 @@ func init() {
 func GetPulsarClient() (*PulsarClient, error) {
 	// Get the plugin with the specified name from the application's plugin manager,
 	// convert it to *PulsarClient type, and return it
-	plugin := app.Lynx().GetPluginManager().GetPlugin(pluginName)
+	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
 	if client, ok := plugin.(*PulsarClient); ok && client != nil {
 		return client, nil
 	}

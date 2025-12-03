@@ -4,8 +4,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/go-lynx/lynx/app/log"
-	"github.com/go-lynx/lynx/plugins/mq/pulsar/conf"
+	"github.com/go-lynx/lynx-pulsar/conf"
+	"github.com/go-lynx/lynx/log"
 )
 
 // HealthChecker represents a health checker for Pulsar client
@@ -40,7 +40,7 @@ func (h *HealthChecker) Stop() {
 	h.mu.Lock()
 	stopped := h.stopped
 	h.mu.Unlock()
-	
+
 	if !stopped {
 		h.stopOnce.Do(func() {
 			close(h.stopChan)
