@@ -6,9 +6,9 @@ import (
 	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
-	"github.com/go-lynx/lynx/app/log"
+	"github.com/go-lynx/lynx-pulsar/conf"
+	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
-	"github.com/go-lynx/lynx/plugins/mq/pulsar/conf"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
