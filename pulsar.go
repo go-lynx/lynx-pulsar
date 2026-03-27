@@ -24,6 +24,7 @@ const (
 type PulsarClient struct {
 	*plugins.BasePlugin
 	config            *conf.Pulsar
+	rt                plugins.Runtime
 	client            pulsar.Client
 	producers         map[string]pulsar.Producer
 	consumers         map[string]pulsar.Consumer
@@ -138,6 +139,7 @@ func (p *PulsarClient) InitializeResources(rt plugins.Runtime) error {
 	if err := p.BasePlugin.InitializeResources(rt); err != nil {
 		return err
 	}
+	p.rt = rt
 
 	// Initialize managers
 	if p.config.Monitoring != nil {
@@ -182,6 +184,42 @@ func (p *PulsarClient) StartupTasks() error {
 
 	// Start connection manager
 	p.connectionManager.Start()
+
+	if p.rt != nil {
+		if err := p.rt.RegisterSharedResource(pluginName, p); err != nil {
+			return fmt.Errorf("failed to register Pulsar shared resource: %w", err)
+		}
+		if p.client != nil {
+			if err := p.rt.RegisterPrivateResource("client", p.client); err != nil {
+				log.Warnf("failed to register Pulsar private client resource: %v", err)
+			}
+		}
+		if len(p.producers) > 0 {
+			if err := p.rt.RegisterPrivateResource("producers", p.producers); err != nil {
+				log.Warnf("failed to register Pulsar private producers resource: %v", err)
+			}
+		}
+		if len(p.consumers) > 0 {
+			if err := p.rt.RegisterPrivateResource("consumers", p.consumers); err != nil {
+				log.Warnf("failed to register Pulsar private consumers resource: %v", err)
+			}
+		}
+		if p.connectionManager != nil {
+			if err := p.rt.RegisterPrivateResource("connection_manager", p.connectionManager); err != nil {
+				log.Warnf("failed to register Pulsar private connection manager resource: %v", err)
+			}
+		}
+		if p.healthChecker != nil {
+			if err := p.rt.RegisterPrivateResource("health_checker", p.healthChecker); err != nil {
+				log.Warnf("failed to register Pulsar private health checker resource: %v", err)
+			}
+		}
+		if p.retryManager != nil {
+			if err := p.rt.RegisterPrivateResource("retry_manager", p.retryManager); err != nil {
+				log.Warnf("failed to register Pulsar private retry manager resource: %v", err)
+			}
+		}
+	}
 
 	log.Infof("Apache Pulsar client successfully initialized")
 	return nil
