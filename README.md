@@ -69,18 +69,72 @@ The plugin follows the Lynx framework's layered architecture:
 
 ## Configuration
 
-### Basic Configuration
+### Configuration Options
+
+#### Global Options
+- `service_url` (string, required): Service URL for Pulsar cluster. Example: `"pulsar://localhost:6650"`
+- `auth` (Auth): Authentication configuration.
+- `tls` (TLS): TLS encryption configuration.
+- `connection` (Connection): Connection pooling and timeout settings.
+- `producers` (repeated Producer): List of producer instances.
+- `consumers` (repeated Consumer): List of consumer instances.
+- `retry` (Retry): Global retry policy.
+- `monitoring` (Monitoring): Metrics and health check settings.
+
+#### Auth Options
+- `type` (string): Auth type (`token`, `oauth2`, `tls`).
+- `token` (string): Token for token-based authentication.
+- `oauth2` (OAuth2): OAuth2 configuration.
+- `tls_auth` (TLSAuth): TLS certificate-based authentication.
+
+#### Connection Options
+- `connection_timeout` (duration, default: `"30s"`): Connection timeout.
+- `operation_timeout` (duration, default: `"30s"`): Operation timeout.
+- `keep_alive_interval` (duration, default: `"30s"`): Keep alive interval.
+- `max_connections_per_host` (int32, default: `1`): Max connections per host.
+- `connection_max_lifetime` (duration, default: `"0"`): Max lifetime for a connection.
+- `enable_connection_pooling` (bool, default: `true`): Enable connection pooling.
+
+#### Producer Options
+- `producer_name` (string): Custom producer name.
+- `send_timeout` (duration, default: `"30s"`): Message send timeout.
+- `max_pending_messages` (int32, default: `1000`): Max pending messages in queue.
+- `block_if_queue_full` (bool, default: `false`): Block if producer queue is full.
+- `batching_enabled` (bool, default: `true`): Enable message batching.
+- `batching_max_publish_delay` (duration, default: `"10ms"`): Max delay for batching.
+- `batching_max_messages` (int32, default: `1000`): Max messages per batch.
+- `compression_type` (string, default: `"none"`): Compression algorithm (`none`, `lz4`, `zlib`, `zstd`, `snappy`).
+- `message_routing_mode` (string, default: `"round_robin"`): Routing mode (`round_robin`, `single_partition`).
+
+#### Consumer Options
+- `consumer_name` (string): Custom consumer name.
+- `subscription_type` (string, default: `"shared"`): Subscription type (`exclusive`, `shared`, `failover`, `key_shared`).
+- `subscription_initial_position` (string, default: `"latest"`): Initial position (`latest`, `earliest`).
+- `receiver_queue_size` (int32, default: `1000`): Receiver queue size.
+- `enable_retry_on_message_failure` (bool, default: `false`): Enable retry on failure.
+- `dead_letter_policy` (DeadLetterPolicy): Dead letter queue policy.
+  - `max_redeliver_count` (int32): Max redelivery attempts before DLQ.
+  - `dead_letter_topic` (string): DLQ topic name.
+- `ack_timeout` (duration, default: `"0"`): Acknowledgment timeout.
+- `negative_ack_delay` (duration, default: `"1m"`): Delay before negative ACK redelivery.
+
+#### Retry & Monitoring
+- `retry.enable` (bool, default: `false`): Enable global retry.
+- `retry.max_attempts` (int32, default: `3`): Max retry attempts.
+- `monitoring.enable_metrics` (bool, default: `true`): Enable metrics collection.
+- `monitoring.enable_health_check` (bool, default: `true`): Enable health checks.
+- `monitoring.health_check_interval` (duration, default: `"10s"`): Health check interval.
+
+### Basic Configuration Example
 
 ```yaml
 lynx:
   pulsar:
     service_url: "pulsar://localhost:6650"
-    
     producers:
       - name: "default-producer"
         enabled: true
         topic: "default-topic"
-    
     consumers:
       - name: "default-consumer"
         enabled: true
@@ -89,46 +143,7 @@ lynx:
         subscription_name: "default-subscription"
 ```
 
-### Advanced Configuration
-
-```yaml
-lynx:
-  pulsar:
-    service_url: "pulsar://pulsar-cluster:6650"
-    
-    auth:
-      type: "token"
-      token: "your-auth-token"
-    
-    tls:
-      enable: true
-      trust_certs_file: "/path/to/certs.pem"
-    
-    connection:
-      connection_timeout: 60s
-      operation_timeout: 60s
-      max_connections_per_host: 5
-    
-    producers:
-      - name: "high-throughput-producer"
-        enabled: true
-        topic: "high-throughput-topic"
-        options:
-          batching_enabled: true
-          compression_type: "lz4"
-          max_pending_messages: 10000
-    
-    consumers:
-      - name: "batch-consumer"
-        enabled: true
-        topics:
-          - "batch-topic"
-        subscription_name: "batch-subscription"
-        options:
-          subscription_type: "shared"
-          receiver_queue_size: 5000
-          read_compacted: true
-```
+Complete example: [conf/example_config.yml](./conf/example_config.yml).
 
 ## Usage
 
@@ -139,27 +154,21 @@ package main
 
 import (
     "context"
-    "github.com/go-lynx/lynx/plugins/mq/pulsar"
+    "log"
+
+    pulsar "github.com/go-lynx/lynx-pulsar"
 )
 
 func main() {
     // Get the Pulsar client instance
-    pulsarClient := pulsar.GetPulsarClient()
-    
-    // Send a message
-    ctx := context.Background()
-    err := pulsarClient.Produce(ctx, "my-topic", []byte("key"), []byte("value"))
+    pulsarClient, err := pulsar.GetPulsarClient()
     if err != nil {
-        panic(err)
+        log.Fatal(err)
     }
-    
-    // Subscribe to messages
-    err = pulsarClient.Subscribe(ctx, []string{"my-topic"}, func(ctx context.Context, msg pulsar.Message) error {
-        fmt.Printf("Received message: %s\n", string(msg.Payload()))
-        return nil
-    })
-    if err != nil {
-        panic(err)
+
+    ctx := context.Background()
+    if err := pulsarClient.Produce(ctx, "my-topic", []byte("key"), []byte("value")); err != nil {
+        log.Fatal(err)
     }
 }
 ```
@@ -286,7 +295,7 @@ The main client interface providing access to all Pulsar functionality.
 
 ### Configuration Structures
 
-See `conf/pulsar.go` for detailed configuration structure definitions.
+See `conf/pulsar.proto` and [conf/example_config.yml](./conf/example_config.yml) for the current configuration structure and a complete sample.
 
 ## Message Patterns
 
@@ -415,7 +424,7 @@ if pulsarClient.IsConnected() {
 ### Local Development
 
 ```bash
-cd plugins/mq/pulsar
+cd lynx-pulsar
 go mod tidy
 go build
 ```
@@ -491,9 +500,9 @@ spec:
    - Verify subscription configuration
    - Monitor dead letter queue
 
-### Debug Mode
+### Operational Visibility
 
-Enable debug logging for detailed troubleshooting:
+Enable metrics and health checks for troubleshooting:
 
 ```yaml
 lynx:
@@ -533,6 +542,10 @@ lynx:
 - Monitor message throughput and latency
 - Track error rates and connection status
 - Use metrics for capacity planning
+
+## Validation
+
+Current automated baseline in this workspace is `go test ./... -> [no test files]`. See [VALIDATION.md](./VALIDATION.md) for the exact output and the recommended manual smoke checks.
 
 ## Contributing
 
