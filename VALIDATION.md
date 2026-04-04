@@ -5,20 +5,23 @@
 Current workspace baseline:
 
 ```bash
-go test ./...
+go test ./... -count=1
+go vet ./...
 ```
 
 Output:
 
 ```text
-?    github.com/go-lynx/lynx-pulsar       [no test files]
+ok   github.com/go-lynx/lynx-pulsar       (passes root package unit tests)
 ?    github.com/go-lynx/lynx-pulsar/conf  [no test files]
+go vet ./...                              (passes)
 ```
 
 ## What This Means
 
-- This module currently has no committed Go test files.
-- The repository has a buildable package baseline, but there is no automated behavior coverage for producer, consumer, retry, or health-check flows yet.
+- The root package now has committed unit tests covering default config construction, runtime config scanning, initialization-time defaulting/validation, client option parsing, and retry/manager helpers.
+- The `conf` package is generated protobuf code and still has no standalone test files.
+- The automated baseline is still unit-level only; there is no committed broker-backed integration test for producer, consumer, or end-to-end health behavior.
 
 ## Recommended Manual Smoke Checks
 
