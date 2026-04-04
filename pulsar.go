@@ -1,6 +1,7 @@
 package pulsar
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sync"
@@ -355,37 +356,63 @@ func normalizePulsarConfig(cfg *conf.Pulsar) error {
 
 // StartupTasks initializes Pulsar client and performs health check
 func (p *PulsarClient) StartupTasks() error {
+	return p.startupWithContext(context.Background())
+}
+
+func (p *PulsarClient) startupWithContext(ctx context.Context) error {
 	log.Infof("initializing Apache Pulsar client")
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("pulsar startup canceled before execution: %w", err)
+	}
+	p.publishRuntimeContract(false, false)
 
 	// Create Pulsar client
 	clientOptions := p.buildClientOptions()
 	client, err := pulsar.NewClient(clientOptions)
 	if err != nil {
+		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to create Pulsar client: %w", err)
 	}
 	p.client = client
+	if err := ctx.Err(); err != nil {
+		p.publishRuntimeContract(false, false)
+		return fmt.Errorf("pulsar startup canceled after client creation: %w", err)
+	}
 
 	// Initialize producers
 	if err := p.initializeProducers(); err != nil {
+		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to initialize producers: %w", err)
+	}
+	if err := ctx.Err(); err != nil {
+		p.publishRuntimeContract(false, false)
+		return fmt.Errorf("pulsar startup canceled after producer init: %w", err)
 	}
 
 	// Initialize consumers
 	if err := p.initializeConsumers(); err != nil {
+		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to initialize consumers: %w", err)
 	}
 
 	// Start health checker
-	if p.config.Monitoring.EnableHealthCheck {
+	if p.config.Monitoring != nil && p.config.Monitoring.EnableHealthCheck && p.healthChecker != nil {
 		p.healthChecker.Start()
 	}
 
 	// Start connection manager
-	p.connectionManager.Start()
+	if p.connectionManager != nil {
+		p.connectionManager.Start()
+	}
 
 	if p.rt != nil {
 		if err := p.rt.RegisterSharedResource(pluginName, p); err != nil {
+			p.publishRuntimeContract(false, false)
 			return fmt.Errorf("failed to register Pulsar shared resource: %w", err)
+		}
+		p.registerRuntimePluginAlias()
+		if err := p.rt.RegisterPrivateResource("config", p.config); err != nil {
+			log.Warnf("failed to register Pulsar private config resource: %v", err)
 		}
 		if p.client != nil {
 			if err := p.rt.RegisterPrivateResource("client", p.client); err != nil {
@@ -417,7 +444,18 @@ func (p *PulsarClient) StartupTasks() error {
 				log.Warnf("failed to register Pulsar private retry manager resource: %v", err)
 			}
 		}
+		if p.metrics != nil {
+			if err := p.rt.RegisterPrivateResource("metrics", p.metrics); err != nil {
+				log.Warnf("failed to register Pulsar private metrics resource: %v", err)
+			}
+		}
 	}
+
+	if err := p.CheckHealth(); err != nil {
+		p.publishRuntimeContract(false, false)
+		return err
+	}
+	p.publishRuntimeContract(true, true)
 
 	log.Infof("Apache Pulsar client successfully initialized")
 	return nil
@@ -425,7 +463,15 @@ func (p *PulsarClient) StartupTasks() error {
 
 // CleanupTasks gracefully shuts down the plugin
 func (p *PulsarClient) CleanupTasks() error {
+	return p.cleanupWithContext(context.Background())
+}
+
+func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 	log.Infof("shutting down Apache Pulsar client plugin")
+	if err := ctx.Err(); err != nil {
+		return fmt.Errorf("pulsar cleanup canceled before execution: %w", err)
+	}
+	p.publishRuntimeContract(false, false)
 
 	// Signal background tasks to stop (protected against multiple calls)
 	p.closeOnce.Do(func() {
@@ -464,6 +510,7 @@ func (p *PulsarClient) CleanupTasks() error {
 	// Close client
 	if p.client != nil {
 		p.client.Close()
+		p.client = nil
 	}
 
 	log.Infof("Apache Pulsar client plugin successfully shut down")
@@ -477,6 +524,9 @@ func (p *PulsarClient) CheckHealth() error {
 	}
 
 	// Check connection status
+	if p.connectionManager == nil {
+		return fmt.Errorf("pulsar connection manager not initialized")
+	}
 	if !p.connectionManager.IsConnected() {
 		return fmt.Errorf("pulsar client not connected")
 	}
