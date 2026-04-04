@@ -1,14 +1,65 @@
 package pulsar
 
 import (
+	"context"
 	"errors"
 	"testing"
 	"time"
 
 	pulsarlib "github.com/apache/pulsar-client-go/pulsar"
+	"github.com/go-kratos/kratos/v2/config"
 	"github.com/go-lynx/lynx-pulsar/conf"
+	"github.com/go-lynx/lynx/plugins"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
+
+type staticConfigSource struct {
+	content string
+}
+
+func (s staticConfigSource) Load() ([]*config.KeyValue, error) {
+	return []*config.KeyValue{{
+		Key:    "runtime.yaml",
+		Value:  []byte(s.content),
+		Format: "yaml",
+	}}, nil
+}
+
+func (s staticConfigSource) Watch() (config.Watcher, error) {
+	ctx, cancel := context.WithCancel(context.Background())
+	return &staticConfigWatcher{ctx: ctx, cancel: cancel}, nil
+}
+
+type staticConfigWatcher struct {
+	ctx    context.Context
+	cancel context.CancelFunc
+}
+
+func (w *staticConfigWatcher) Next() ([]*config.KeyValue, error) {
+	<-w.ctx.Done()
+	return nil, w.ctx.Err()
+}
+
+func (w *staticConfigWatcher) Stop() error {
+	w.cancel()
+	return nil
+}
+
+func newRuntimeWithConfigFile(t *testing.T, content string) plugins.Runtime {
+	t.Helper()
+
+	cfg := config.New(config.WithSource(staticConfigSource{content: content}))
+	if err := cfg.Load(); err != nil {
+		t.Fatalf("load config: %v", err)
+	}
+	t.Cleanup(func() {
+		_ = cfg.Close()
+	})
+
+	rt := plugins.NewSimpleRuntime()
+	rt.SetConfig(cfg)
+	return rt
+}
 
 func TestNewPulsarClientDefaults(t *testing.T) {
 	client := NewPulsarClient()
@@ -188,5 +239,120 @@ func TestPulsarManagersAndRetryLogic(t *testing.T) {
 	}
 	if got := len(client.GetEnabledConsumers()); got != 1 {
 		t.Fatalf("expected 1 enabled consumer after filtering, got %d", got)
+	}
+}
+
+func TestInitializeResourcesLoadsRuntimeConfig(t *testing.T) {
+	rt := newRuntimeWithConfigFile(t, `
+lynx:
+  pulsar:
+    service_url: "pulsar://broker:6650"
+    monitoring:
+      enable_health_check: false
+    producers:
+      - name: "orders-producer"
+        enabled: true
+        topic: "orders"
+    consumers:
+      - name: "orders-consumer"
+        enabled: true
+        topics:
+          - "orders"
+        subscription_name: "orders-sub"
+`)
+
+	client := NewPulsarClient()
+	if err := client.InitializeResources(rt); err != nil {
+		t.Fatalf("InitializeResources returned error: %v", err)
+	}
+
+	if client.config.ServiceUrl != "pulsar://broker:6650" {
+		t.Fatalf("unexpected service_url: %q", client.config.ServiceUrl)
+	}
+	if client.config.Connection == nil {
+		t.Fatal("expected connection defaults to be initialized")
+	}
+	if client.config.Connection.ConnectionTimeout.AsDuration() != 30*time.Second {
+		t.Fatalf("unexpected default connection timeout: %s", client.config.Connection.ConnectionTimeout.AsDuration())
+	}
+	if client.config.Retry == nil || client.config.Retry.MaxAttempts != 3 {
+		t.Fatalf("expected retry defaults to be applied, got %#v", client.config.Retry)
+	}
+	if client.config.Monitoring == nil {
+		t.Fatal("expected monitoring config to be initialized")
+	}
+	if client.config.Monitoring.EnableHealthCheck {
+		t.Fatal("expected runtime config to disable health check")
+	}
+	if client.config.Monitoring.HealthCheckInterval.AsDuration() != 30*time.Second {
+		t.Fatalf("unexpected default health check interval: %s", client.config.Monitoring.HealthCheckInterval.AsDuration())
+	}
+	if client.healthChecker == nil || client.connectionManager == nil || client.retryManager == nil {
+		t.Fatal("expected InitializeResources to create all managers")
+	}
+	if client.config.Producers[0].Options == nil || client.config.Producers[0].Options.SendTimeout.AsDuration() != 30*time.Second {
+		t.Fatalf("expected producer defaults to be applied, got %#v", client.config.Producers[0].Options)
+	}
+	if client.config.Consumers[0].Options == nil || client.config.Consumers[0].Options.ReceiverQueueSize != 1000 {
+		t.Fatalf("expected consumer defaults to be applied, got %#v", client.config.Consumers[0].Options)
+	}
+}
+
+func TestConfigureNormalizesPartialConfig(t *testing.T) {
+	client := NewPulsarClient()
+
+	err := client.Configure(&conf.Pulsar{
+		ServiceUrl: "pulsar://broker:6650",
+		Monitoring: &conf.Monitoring{
+			EnableHealthCheck: false,
+		},
+		Producers: []*conf.Producer{
+			{
+				Name:    "orders-producer",
+				Enabled: true,
+				Topic:   "orders",
+			},
+		},
+		Consumers: []*conf.Consumer{
+			{
+				Name:             "orders-consumer",
+				Enabled:          true,
+				Topics:           []string{"orders"},
+				SubscriptionName: "orders-sub",
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Configure returned error: %v", err)
+	}
+
+	if client.config.Connection == nil || client.config.Connection.MaxConnectionsPerHost != 1 {
+		t.Fatalf("expected Configure to populate connection defaults, got %#v", client.config.Connection)
+	}
+	if client.config.Monitoring == nil || client.config.Monitoring.EnableHealthCheck {
+		t.Fatalf("expected Configure to preserve explicit disabled health check, got %#v", client.config.Monitoring)
+	}
+	if client.config.Producers[0].Options == nil || client.config.Producers[0].Options.SendTimeout.AsDuration() != 30*time.Second {
+		t.Fatalf("expected Configure to populate producer option defaults, got %#v", client.config.Producers[0].Options)
+	}
+	if client.config.Consumers[0].Options == nil || client.config.Consumers[0].Options.NegativeAckDelay.AsDuration() != time.Minute {
+		t.Fatalf("expected Configure to populate consumer option defaults, got %#v", client.config.Consumers[0].Options)
+	}
+}
+
+func TestConfigureRejectsInvalidConfig(t *testing.T) {
+	client := NewPulsarClient()
+
+	err := client.Configure(&conf.Pulsar{
+		ServiceUrl: "pulsar://broker:6650",
+		Producers: []*conf.Producer{
+			{
+				Name:    "broken-producer",
+				Enabled: true,
+			},
+		},
+	})
+	if err == nil {
+		t.Fatal("expected Configure to reject enabled producer without topic")
 	}
 }

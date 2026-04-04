@@ -1,14 +1,17 @@
 package pulsar
 
 import (
+	"errors"
 	"fmt"
 	"sync"
 	"time"
 
 	"github.com/apache/pulsar-client-go/pulsar"
+	kratosconfig "github.com/go-kratos/kratos/v2/config"
 	"github.com/go-lynx/lynx-pulsar/conf"
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
+	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
 
@@ -42,7 +45,30 @@ type PulsarClient struct {
 
 // NewPulsarClient creates a new Pulsar client plugin instance
 func NewPulsarClient() *PulsarClient {
-	pulsarConf := &conf.Pulsar{
+	c := &PulsarClient{
+		config:       defaultPulsarConfig(),
+		producers:    make(map[string]pulsar.Producer),
+		consumers:    make(map[string]pulsar.Consumer),
+		closeChan:    make(chan struct{}),
+		closed:       false,
+		metrics:      &Metrics{},
+		healthStatus: &HealthStatus{},
+	}
+
+	c.BasePlugin = plugins.NewBasePlugin(
+		plugins.GeneratePluginID("", pluginName, pluginVersion),
+		pluginName,
+		pluginDescription,
+		pluginVersion,
+		confPrefix,
+		103, // Weight for Pulsar
+	)
+
+	return c
+}
+
+func defaultPulsarConfig() *conf.Pulsar {
+	return &conf.Pulsar{
 		ServiceUrl: "pulsar://localhost:6650",
 		Connection: &conf.Connection{
 			ConnectionTimeout:       durationpb.New(30 * time.Second),
@@ -101,33 +127,30 @@ func NewPulsarClient() *PulsarClient {
 			},
 		},
 	}
+}
 
-	c := &PulsarClient{
-		config:       pulsarConf,
-		producers:    make(map[string]pulsar.Producer),
-		consumers:    make(map[string]pulsar.Consumer),
-		closeChan:    make(chan struct{}),
-		closed:       false,
-		metrics:      &Metrics{},
-		healthStatus: &HealthStatus{},
+func clonePulsarConfig(cfg *conf.Pulsar) *conf.Pulsar {
+	if cfg == nil {
+		return nil
 	}
-
-	c.BasePlugin = plugins.NewBasePlugin(
-		plugins.GeneratePluginID("", pluginName, pluginVersion),
-		pluginName,
-		pluginDescription,
-		pluginVersion,
-		confPrefix,
-		103, // Weight for Pulsar
-	)
-
-	return c
+	cloned, ok := proto.Clone(cfg).(*conf.Pulsar)
+	if !ok {
+		return nil
+	}
+	return cloned
 }
 
 // Configure updates Pulsar configuration
 func (p *PulsarClient) Configure(c any) error {
 	if pulsarConf, ok := c.(*conf.Pulsar); ok {
-		p.config = pulsarConf
+		normalized := clonePulsarConfig(pulsarConf)
+		if normalized == nil {
+			return plugins.ErrInvalidConfiguration
+		}
+		if err := normalizePulsarConfig(normalized); err != nil {
+			return err
+		}
+		p.config = normalized
 		return nil
 	}
 	return plugins.ErrInvalidConfiguration
@@ -141,6 +164,18 @@ func (p *PulsarClient) InitializeResources(rt plugins.Runtime) error {
 	}
 	p.rt = rt
 
+	cfg := defaultPulsarConfig()
+	if rt != nil && rt.GetConfig() != nil {
+		// Scan into a default-populated config so omitted YAML fields keep production-safe defaults.
+		if err := rt.GetConfig().Value(confPrefix).Scan(cfg); err != nil && !errors.Is(err, kratosconfig.ErrNotFound) {
+			return fmt.Errorf("failed to scan Pulsar configuration: %w", err)
+		}
+	}
+	if err := normalizePulsarConfig(cfg); err != nil {
+		return err
+	}
+	p.config = cfg
+
 	// Initialize managers
 	if p.config.Monitoring != nil {
 		p.healthChecker = NewHealthChecker(p.config.Monitoring.HealthCheckInterval.AsDuration())
@@ -150,6 +185,169 @@ func (p *PulsarClient) InitializeResources(rt plugins.Runtime) error {
 	}
 	if p.config.Retry != nil {
 		p.retryManager = NewRetryManager(p.config.Retry)
+	}
+
+	return nil
+}
+
+func normalizePulsarConfig(cfg *conf.Pulsar) error {
+	if cfg == nil {
+		return fmt.Errorf("pulsar configuration is required")
+	}
+	if cfg.ServiceUrl == "" {
+		cfg.ServiceUrl = "pulsar://localhost:6650"
+	}
+
+	if cfg.Connection == nil {
+		cfg.Connection = defaultPulsarConfig().Connection
+	} else {
+		if cfg.Connection.ConnectionTimeout == nil || cfg.Connection.ConnectionTimeout.AsDuration() <= 0 {
+			cfg.Connection.ConnectionTimeout = durationpb.New(30 * time.Second)
+		}
+		if cfg.Connection.OperationTimeout == nil || cfg.Connection.OperationTimeout.AsDuration() <= 0 {
+			cfg.Connection.OperationTimeout = durationpb.New(30 * time.Second)
+		}
+		if cfg.Connection.KeepAliveInterval == nil || cfg.Connection.KeepAliveInterval.AsDuration() <= 0 {
+			cfg.Connection.KeepAliveInterval = durationpb.New(30 * time.Second)
+		}
+		if cfg.Connection.MaxConnectionsPerHost <= 0 {
+			cfg.Connection.MaxConnectionsPerHost = 1
+		}
+	}
+
+	if cfg.Retry == nil {
+		cfg.Retry = defaultPulsarConfig().Retry
+	} else {
+		if cfg.Retry.MaxAttempts <= 0 {
+			cfg.Retry.MaxAttempts = 3
+		}
+		if cfg.Retry.InitialDelay == nil || cfg.Retry.InitialDelay.AsDuration() <= 0 {
+			cfg.Retry.InitialDelay = durationpb.New(100 * time.Millisecond)
+		}
+		if cfg.Retry.MaxDelay == nil || cfg.Retry.MaxDelay.AsDuration() <= 0 {
+			cfg.Retry.MaxDelay = durationpb.New(30 * time.Second)
+		}
+		if cfg.Retry.MaxDelay.AsDuration() < cfg.Retry.InitialDelay.AsDuration() {
+			return fmt.Errorf("pulsar retry.max_delay must be greater than or equal to retry.initial_delay")
+		}
+		if cfg.Retry.RetryDelayMultiplier <= 0 {
+			cfg.Retry.RetryDelayMultiplier = 2.0
+		}
+		if cfg.Retry.JitterFactor < 0 {
+			return fmt.Errorf("pulsar retry.jitter_factor must be non-negative")
+		}
+	}
+
+	if cfg.Monitoring == nil {
+		cfg.Monitoring = defaultPulsarConfig().Monitoring
+	} else {
+		if cfg.Monitoring.MetricsNamespace == "" {
+			cfg.Monitoring.MetricsNamespace = "lynx_pulsar"
+		}
+		if cfg.Monitoring.HealthCheckInterval == nil || cfg.Monitoring.HealthCheckInterval.AsDuration() <= 0 {
+			cfg.Monitoring.HealthCheckInterval = durationpb.New(30 * time.Second)
+		}
+	}
+
+	for i, producer := range cfg.Producers {
+		if producer == nil {
+			return fmt.Errorf("pulsar producers[%d] configuration is nil", i)
+		}
+		if producer.Enabled {
+			if producer.Name == "" {
+				return fmt.Errorf("pulsar producers[%d].name is required when enabled", i)
+			}
+			if producer.Topic == "" {
+				return fmt.Errorf("pulsar producers[%d].topic is required when enabled", i)
+			}
+		}
+		if producer.Options == nil {
+			producer.Options = &conf.ProducerOptions{}
+		}
+		if producer.Options.SendTimeout == nil || producer.Options.SendTimeout.AsDuration() <= 0 {
+			producer.Options.SendTimeout = durationpb.New(30 * time.Second)
+		}
+		if producer.Options.MaxPendingMessages <= 0 {
+			producer.Options.MaxPendingMessages = 1000
+		}
+		if producer.Options.BatchingMaxPublishDelay == nil || producer.Options.BatchingMaxPublishDelay.AsDuration() <= 0 {
+			producer.Options.BatchingMaxPublishDelay = durationpb.New(10 * time.Millisecond)
+		}
+		if producer.Options.BatchingMaxMessages <= 0 {
+			producer.Options.BatchingMaxMessages = 1000
+		}
+		if producer.Options.CompressionType == "" {
+			producer.Options.CompressionType = "none"
+		}
+		if producer.Options.HashingScheme == "" {
+			producer.Options.HashingScheme = "java_string_hash"
+		}
+		if producer.Options.MessageRoutingMode == "" {
+			producer.Options.MessageRoutingMode = "round_robin"
+		}
+	}
+
+	for i, consumer := range cfg.Consumers {
+		if consumer == nil {
+			return fmt.Errorf("pulsar consumers[%d] configuration is nil", i)
+		}
+		if consumer.Enabled {
+			if consumer.Name == "" {
+				return fmt.Errorf("pulsar consumers[%d].name is required when enabled", i)
+			}
+			if len(consumer.Topics) == 0 {
+				return fmt.Errorf("pulsar consumers[%d].topics is required when enabled", i)
+			}
+			if consumer.SubscriptionName == "" {
+				return fmt.Errorf("pulsar consumers[%d].subscription_name is required when enabled", i)
+			}
+		}
+		if consumer.Options == nil {
+			consumer.Options = &conf.ConsumerOptions{}
+		}
+		if consumer.Options.SubscriptionType == "" {
+			consumer.Options.SubscriptionType = "exclusive"
+		}
+		if consumer.Options.SubscriptionInitialPosition == "" {
+			consumer.Options.SubscriptionInitialPosition = "latest"
+		}
+		if consumer.Options.SubscriptionMode == "" {
+			consumer.Options.SubscriptionMode = "durable"
+		}
+		if consumer.Options.ReceiverQueueSize <= 0 {
+			consumer.Options.ReceiverQueueSize = 1000
+		}
+		if consumer.Options.NegativeAckDelay == nil || consumer.Options.NegativeAckDelay.AsDuration() <= 0 {
+			consumer.Options.NegativeAckDelay = durationpb.New(1 * time.Minute)
+		}
+		if consumer.Options.CryptoFailureAction == "" {
+			consumer.Options.CryptoFailureAction = "fail"
+		}
+	}
+
+	if cfg.Auth != nil {
+		switch cfg.Auth.Type {
+		case "", "token":
+			if cfg.Auth.Type == "token" && cfg.Auth.Token == "" {
+				return fmt.Errorf("pulsar auth.token is required when auth.type=token")
+			}
+		case "oauth2":
+			if cfg.Auth.Oauth2 == nil {
+				return fmt.Errorf("pulsar auth.oauth2 is required when auth.type=oauth2")
+			}
+			if cfg.Auth.Oauth2.IssuerUrl == "" || cfg.Auth.Oauth2.ClientId == "" || cfg.Auth.Oauth2.ClientSecret == "" {
+				return fmt.Errorf("pulsar auth.oauth2 issuer_url, client_id, and client_secret are required")
+			}
+		case "tls":
+			if cfg.Auth.TlsAuth == nil {
+				return fmt.Errorf("pulsar auth.tls_auth is required when auth.type=tls")
+			}
+			if cfg.Auth.TlsAuth.CertFile == "" || cfg.Auth.TlsAuth.KeyFile == "" {
+				return fmt.Errorf("pulsar auth.tls_auth cert_file and key_file are required")
+			}
+		default:
+			return fmt.Errorf("unsupported pulsar auth.type %q", cfg.Auth.Type)
+		}
 	}
 
 	return nil
