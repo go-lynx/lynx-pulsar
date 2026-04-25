@@ -16,11 +16,11 @@ lynx:
       
       # OAuth2 configuration (when type is "oauth2")
       oauth2:
-        issuer_url: "https://your-oauth2-issuer.com"
-        client_id: "your-client-id"
-        client_secret: "your-client-secret"
-        audience: "your-audience"
-        scope: "your-scope"
+        issuer_url: ""
+        client_id: ""
+        client_secret: ""
+        audience: ""
+        scope: ""
       
       # TLS authentication (when type is "tls")
       tls_auth:
@@ -165,7 +165,7 @@ lynx:
 # 1. Production Environment with Authentication
 # auth:
 #   type: "token"
-#   token: "your-production-token"
+#   token: ""
 # 
 # tls:
 #   enable: true
@@ -204,10 +204,10 @@ lynx:
 # auth:
 #   type: "oauth2"
 #   oauth2:
-#     issuer_url: "https://your-identity-provider.com"
-#     client_id: "your-client-id"
-#     client_secret: "your-client-secret"
-#     audience: "pulsar://your-pulsar-cluster"
+#     issuer_url: ""
+#     client_id: ""
+#     client_secret: ""
+#     audience: ""
 #     scope: "openid profile email"
 
 # 5. Schema Registry Integration
