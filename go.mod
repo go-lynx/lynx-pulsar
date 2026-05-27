@@ -7,7 +7,7 @@ toolchain go1.26.2
 require (
 	github.com/apache/pulsar-client-go v0.19.0
 	github.com/go-kratos/kratos/v2 v2.9.2
-	github.com/go-lynx/lynx v1.6.0-beta
+	github.com/go-lynx/lynx v1.6.1
 	google.golang.org/protobuf v1.36.10
 )
 
