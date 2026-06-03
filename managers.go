@@ -159,12 +159,12 @@ func (c *ConnectionManager) IsConnected() bool {
 	return c.connected
 }
 
-// GetConnectionStats returns connection statistics
-func (c *ConnectionManager) GetConnectionStats() map[string]interface{} {
+// GetConnectionStats returns connection statistics.
+func (c *ConnectionManager) GetConnectionStats() map[string]any {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
 
-	return map[string]interface{}{
+	return map[string]any{
 		"connected":                 c.connected,
 		"max_connections_per_host":  c.config.MaxConnectionsPerHost,
 		"enable_connection_pooling": c.config.EnableConnectionPooling,
@@ -184,18 +184,18 @@ func (c *ConnectionManager) Reconnect() error {
 	return nil
 }
 
-// RetryManager represents a retry manager for Pulsar operations
+// RetryManager manages retry behaviour for Pulsar operations.
 type RetryManager struct {
 	config *conf.Retry
-	stats  map[string]interface{}
+	stats  map[string]any
 	mu     sync.RWMutex
 }
 
-// NewRetryManager creates a new retry manager
+// NewRetryManager creates a new retry manager.
 func NewRetryManager(config *conf.Retry) *RetryManager {
 	return &RetryManager{
 		config: config,
-		stats:  make(map[string]interface{}),
+		stats:  make(map[string]any),
 	}
 }
 
@@ -225,27 +225,32 @@ func (r *RetryManager) GetRetryDelay(attempt int) time.Duration {
 	return delay
 }
 
-// RecordRetry records a retry attempt
+// RecordRetry logs a retry attempt for the named operation.
+// err may be nil if the retry eventually succeeded.
 func (r *RetryManager) RecordRetry(operation string, attempt int, err error) {
 	r.mu.Lock()
 	defer r.mu.Unlock()
 
 	if r.stats[operation] == nil {
-		r.stats[operation] = make(map[string]interface{})
+		r.stats[operation] = make(map[string]any)
 	}
-	if opStats, ok := r.stats[operation].(map[string]interface{}); ok {
+	if opStats, ok := r.stats[operation].(map[string]any); ok {
 		opStats["attempts"] = attempt
-		opStats["last_error"] = err.Error()
+		if err != nil {
+			opStats["last_error"] = err.Error()
+		} else {
+			opStats["last_error"] = nil
+		}
 		opStats["last_retry"] = time.Now()
 	}
 }
 
-// GetRetryStats gets retry statistics
-func (r *RetryManager) GetRetryStats() map[string]interface{} {
+// GetRetryStats returns retry statistics keyed by operation name.
+func (r *RetryManager) GetRetryStats() map[string]any {
 	r.mu.RLock()
 	defer r.mu.RUnlock()
 
-	stats := make(map[string]interface{})
+	stats := make(map[string]any)
 	for k, v := range r.stats {
 		stats[k] = v
 	}

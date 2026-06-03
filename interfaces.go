@@ -8,208 +8,153 @@ import (
 	"github.com/go-lynx/lynx/plugins"
 )
 
-// Producer represents a Pulsar producer interface
+// MessageHandler is the callback invoked for each message received by a consumer.
+// Return a non-nil error to trigger a negative acknowledgement and redelivery.
+type MessageHandler func(ctx context.Context, msg pulsar.Message) error
+
+// Producer defines the message-publishing surface of the Pulsar plugin.
 type Producer interface {
-	// Produce sends a single message to the specified topic
+	// Produce sends a single message to the topic associated with the named producer.
 	Produce(ctx context.Context, topic string, key, value []byte) error
 
-	// ProduceWithProperties sends a message with properties
+	// ProduceWithProperties sends a message with additional user-defined properties.
 	ProduceWithProperties(ctx context.Context, topic string, key, value []byte, properties map[string]string) error
 
-	// ProduceAsync sends a message asynchronously
+	// ProduceAsync sends a message asynchronously and invokes callback on completion.
 	ProduceAsync(ctx context.Context, topic string, key, value []byte, callback func(pulsar.MessageID, *pulsar.ProducerMessage, error)) error
 
-	// ProduceBatch sends messages in batch
+	// ProduceBatch sends a batch of pre-built messages via the named producer.
 	ProduceBatch(ctx context.Context, topic string, messages []*pulsar.ProducerMessage) error
 
-	// ProduceWith sends a message by producer instance name
+	// ProduceWith sends a message using the producer identified by producerName.
 	ProduceWith(ctx context.Context, producerName, topic string, key, value []byte) error
 
-	// GetProducer gets the underlying producer client
+	// GetProducer returns the underlying Pulsar producer for the given name.
 	GetProducer(name string) pulsar.Producer
 
-	// IsProducerReady checks if the producer is ready
+	// IsProducerReady reports whether the named producer is initialised and ready.
 	IsProducerReady(name string) bool
 
-	// Close closes the producer
+	// Close closes and removes the named producer.
 	Close(name string) error
 }
 
-// Consumer represents a Pulsar consumer interface
+// Consumer defines the message-consuming surface of the Pulsar plugin.
 type Consumer interface {
-	// Subscribe subscribes to topics and sets message handler
+	// Subscribe creates a push-consumer for the given topics using the default consumer.
 	Subscribe(ctx context.Context, topics []string, handler MessageHandler) error
 
-	// SubscribeWith subscribes by consumer instance name
+	// SubscribeWith creates a push-consumer identified by consumerName.
 	SubscribeWith(ctx context.Context, consumerName string, topics []string, handler MessageHandler) error
 
-	// SubscribeWithRegex subscribes to topics matching a regex pattern
+	// SubscribeWithRegex creates a push-consumer that subscribes to topics matching
+	// the regular expression pattern.
 	SubscribeWithRegex(ctx context.Context, topicsPattern string, handler MessageHandler) error
 
-	// GetConsumer gets the underlying consumer client
+	// GetConsumer returns the underlying Pulsar consumer for the given name.
 	GetConsumer(name string) pulsar.Consumer
 
-	// IsConsumerReady checks if the consumer is ready
+	// IsConsumerReady reports whether the named consumer is initialised and ready.
 	IsConsumerReady(name string) bool
 
-	// Close closes the consumer
-	Close(name string) error
-
-	// Unsubscribe unsubscribes from topics
+	// Unsubscribe cancels the subscription of the named consumer and removes it.
 	Unsubscribe(name string) error
 }
 
-// MessageHandler represents a message handler function
-type MessageHandler func(ctx context.Context, msg pulsar.Message) error
-
-// ClientInterface represents the main Pulsar client interface
+// ClientInterface is the full capability surface exposed by the Pulsar plugin.
 type ClientInterface interface {
 	Producer
 	Consumer
 
-	// InitializeResources initializes resources
+	// InitializeResources loads configuration and sets up internal managers.
 	InitializeResources(rt plugins.Runtime) error
 
-	// StartupTasks startup tasks
+	// StartupTasks connects to Pulsar and initialises producers/consumers.
 	StartupTasks() error
 
-	// ShutdownTasks shutdown tasks
+	// ShutdownTasks gracefully closes all producers, consumers, and the client.
 	ShutdownTasks() error
 
-	// GetMetrics gets monitoring metrics
+	// GetMetrics returns the live Prometheus-backed metrics snapshot.
 	GetMetrics() *Metrics
 
-	// GetHealth gets health status
+	// GetHealth returns the current health status of the plugin.
 	GetHealth() *HealthStatus
 }
 
-// MetricsProvider represents monitoring metrics provider interface
+// MetricsProvider is the observability interface for Pulsar metrics.
 type MetricsProvider interface {
-	// GetStats gets statistics
-	GetStats() map[string]interface{}
+	// GetStats returns a map of current metric values keyed by metric name.
+	GetStats() map[string]any
 
-	// Reset resets metrics
+	// Reset zeroes all in-process counters.
 	Reset()
 
-	// RecordMessageSent records a sent message
+	// RecordMessageSent records a successfully sent message with its size and latency.
 	RecordMessageSent(topic string, size int, duration time.Duration)
 
-	// RecordMessageReceived records a received message
+	// RecordMessageReceived records a successfully received message with its size.
 	RecordMessageReceived(topic string, size int)
 
-	// RecordError records an error
+	// RecordError records an error associated with a topic and error category.
 	RecordError(topic string, errorType string)
 }
 
-// HealthCheckerInterface represents health checker interface
+// HealthCheckerInterface is the observability interface for the Pulsar health checker.
 type HealthCheckerInterface interface {
-	// Start starts health check
+	// Start begins periodic health checks.
 	Start()
 
-	// Stop stops health check
+	// Stop halts periodic health checks.
 	Stop()
 
-	// IsHealthy checks if healthy
+	// IsHealthy reports whether the last health check succeeded.
 	IsHealthy() bool
 
-	// GetLastCheck gets last check time
+	// GetLastCheck returns the timestamp of the most recent health check.
 	GetLastCheck() time.Time
 
-	// GetErrorCount gets error count
+	// GetErrorCount returns the cumulative number of health-check failures.
 	GetErrorCount() int
 
-	// GetLastError gets last error
+	// GetLastError returns the error from the most recent failed health check.
 	GetLastError() error
 }
 
-// ConnectionManagerInterface represents connection manager interface
+// ConnectionManagerInterface manages the lifecycle of broker connections.
 type ConnectionManagerInterface interface {
-	// Start starts connection manager
+	// Start marks the connection as active.
 	Start()
 
-	// Stop stops connection manager
+	// Stop marks the connection as inactive.
 	Stop()
 
-	// IsConnected checks if connected
+	// IsConnected reports whether the manager believes a connection is established.
 	IsConnected() bool
 
-	// GetConnectionStats gets connection statistics
-	GetConnectionStats() map[string]interface{}
+	// GetConnectionStats returns a map of current connection statistics.
+	GetConnectionStats() map[string]any
 
-	// Reconnect attempts to reconnect
+	// Reconnect attempts to re-establish the broker connection.
 	Reconnect() error
 }
 
-// RetryManagerInterface represents retry manager interface
+// RetryManagerInterface governs retry behaviour for Pulsar operations.
 type RetryManagerInterface interface {
-	// ShouldRetry determines if operation should be retried
+	// ShouldRetry reports whether attempt number attempt should be retried given err.
 	ShouldRetry(attempt int, err error) bool
 
-	// GetRetryDelay gets retry delay for attempt
+	// GetRetryDelay returns the delay to wait before the given retry attempt.
 	GetRetryDelay(attempt int) time.Duration
 
-	// RecordRetry records a retry attempt
+	// RecordRetry logs a retry attempt for the named operation.
 	RecordRetry(operation string, attempt int, err error)
 
-	// GetRetryStats gets retry statistics
-	GetRetryStats() map[string]interface{}
+	// GetRetryStats returns retry statistics keyed by operation name.
+	GetRetryStats() map[string]any
 }
 
-// DeadLetterQueueInterface represents dead letter queue interface
-type DeadLetterQueueInterface interface {
-	// SendToDLQ sends message to dead letter queue
-	SendToDLQ(topic string, message pulsar.Message, reason string) error
-
-	// GetDLQStats gets dead letter queue statistics
-	GetDLQStats() map[string]interface{}
-
-	// ProcessDLQ processes dead letter queue messages
-	ProcessDLQ(handler MessageHandler) error
-}
-
-// SchemaRegistryInterface represents schema registry interface
-type SchemaRegistryInterface interface {
-	// GetSchema gets schema for topic
-	GetSchema(topic string) (pulsar.Schema, error)
-
-	// RegisterSchema registers schema for topic
-	RegisterSchema(topic string, schema pulsar.Schema) error
-
-	// CheckCompatibility checks schema compatibility
-	CheckCompatibility(topic string, schema pulsar.Schema) (bool, error)
-}
-
-// TopicManagerInterface represents topic management interface
-type TopicManagerInterface interface {
-	// CreateTopic creates a new topic
-	CreateTopic(topic string, partitions int) error
-
-	// DeleteTopic deletes a topic
-	DeleteTopic(topic string) error
-
-	// GetTopicInfo gets topic information
-	GetTopicInfo(topic string) (map[string]interface{}, error)
-
-	// ListTopics lists all topics
-	ListTopics() ([]string, error)
-}
-
-// SubscriptionManagerInterface represents subscription management interface
-type SubscriptionManagerInterface interface {
-	// CreateSubscription creates a new subscription
-	CreateSubscription(topic, subscription string, subscriptionType pulsar.SubscriptionType) error
-
-	// DeleteSubscription deletes a subscription
-	DeleteSubscription(topic, subscription string) error
-
-	// GetSubscriptionInfo gets subscription information
-	GetSubscriptionInfo(topic, subscription string) (map[string]interface{}, error)
-
-	// ListSubscriptions lists all subscriptions for a topic
-	ListSubscriptions(topic string) ([]string, error)
-}
-
-// Metrics represents Pulsar metrics
+// Metrics is a snapshot of Pulsar plugin counters, sizes, and latencies.
 type Metrics struct {
 	// Message counts
 	MessagesSent     int64
@@ -238,25 +183,29 @@ type Metrics struct {
 	RetryErrors  int64
 }
 
-// HealthStatus represents health status
+// HealthStatus captures the overall health of the Pulsar plugin at a point in time.
 type HealthStatus struct {
-	// Overall health
+	// Healthy is true when all components are operating normally.
 	Healthy bool
 
-	// Last check time
+	// LastCheck is the timestamp of the most recent health evaluation.
 	LastCheck time.Time
 
-	// Error count
+	// ErrorCount is the number of health-check failures observed.
 	ErrorCount int
 
-	// Last error
+	// LastError holds the most recent health-check error, or nil.
 	LastError error
 
-	// Component status
-	ProducerStatus   map[string]bool
-	ConsumerStatus   map[string]bool
+	// ProducerStatus maps each producer name to its readiness state.
+	ProducerStatus map[string]bool
+
+	// ConsumerStatus maps each consumer name to its readiness state.
+	ConsumerStatus map[string]bool
+
+	// ConnectionStatus reports whether the broker connection is active.
 	ConnectionStatus bool
 
-	// Metrics
+	// Metrics is the most recent metrics snapshot.
 	Metrics *Metrics
 }
