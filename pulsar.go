@@ -1,3 +1,7 @@
+// Package pulsar provides a production-grade Apache Pulsar client plugin for the
+// go-lynx framework. It supports multiple named producer and consumer instances,
+// TLS and authentication, configurable retry with exponential back-off, Prometheus
+// metrics, and graceful shutdown.
 package pulsar
 
 import (
@@ -12,6 +16,7 @@ import (
 	"github.com/go-lynx/lynx-pulsar/conf"
 	"github.com/go-lynx/lynx/log"
 	"github.com/go-lynx/lynx/plugins"
+	"github.com/prometheus/client_golang/prometheus"
 	"google.golang.org/protobuf/proto"
 	"google.golang.org/protobuf/types/known/durationpb"
 )
@@ -24,7 +29,7 @@ const (
 	confPrefix        = "lynx.pulsar"
 )
 
-// PulsarClient represents the main Pulsar client plugin instance
+// PulsarClient represents the main Pulsar client plugin instance.
 type PulsarClient struct {
 	*plugins.BasePlugin
 	config            *conf.Pulsar
@@ -35,16 +40,17 @@ type PulsarClient struct {
 	producerMutex     sync.RWMutex
 	consumerMutex     sync.RWMutex
 	closeChan         chan struct{}
-	closeOnce         sync.Once // Protect against multiple close operations
+	closeOnce         sync.Once // protect against multiple close operations
 	closed            bool
 	metrics           *Metrics
+	prom              *promMetrics
 	healthStatus      *HealthStatus
 	healthChecker     *HealthChecker
 	connectionManager *ConnectionManager
 	retryManager      *RetryManager
 }
 
-// NewPulsarClient creates a new Pulsar client plugin instance
+// NewPulsarClient creates a new Pulsar client plugin instance.
 func NewPulsarClient() *PulsarClient {
 	c := &PulsarClient{
 		config:       defaultPulsarConfig(),
@@ -53,6 +59,7 @@ func NewPulsarClient() *PulsarClient {
 		closeChan:    make(chan struct{}),
 		closed:       false,
 		metrics:      &Metrics{},
+		prom:         newPromMetrics(prometheus.DefaultRegisterer),
 		healthStatus: &HealthStatus{},
 	}
 
@@ -461,7 +468,13 @@ func (p *PulsarClient) startupWithContext(ctx context.Context) error {
 	return nil
 }
 
-// CleanupTasks gracefully shuts down the plugin
+// ShutdownTasks gracefully shuts down the plugin.
+// It is an alias for CleanupTasks and satisfies the ClientInterface contract.
+func (p *PulsarClient) ShutdownTasks() error {
+	return p.CleanupTasks()
+}
+
+// CleanupTasks gracefully shuts down the plugin.
 func (p *PulsarClient) CleanupTasks() error {
 	return p.cleanupWithContext(context.Background())
 }
@@ -517,21 +530,22 @@ func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 	return nil
 }
 
-// CheckHealth performs health check on Pulsar client
+// CheckHealth performs a health check on the Pulsar client. It verifies that
+// the underlying Pulsar client is initialised and that the connection manager
+// reports an active connection. Individual nil producers/consumers are logged
+// as warnings but do not cause the check to fail.
 func (p *PulsarClient) CheckHealth() error {
 	if p.client == nil {
 		return fmt.Errorf("pulsar client not initialized")
 	}
 
-	// Check connection status
-	if p.connectionManager == nil {
-		return fmt.Errorf("pulsar connection manager not initialized")
-	}
-	if !p.connectionManager.IsConnected() {
+	// connectionManager is optional: if it was not created (e.g. config.Connection
+	// was nil), we skip the connectivity check.
+	if p.connectionManager != nil && !p.connectionManager.IsConnected() {
 		return fmt.Errorf("pulsar client not connected")
 	}
 
-	// Check producer status
+	// Log nil producers/consumers as warnings without failing the health check.
 	p.producerMutex.RLock()
 	for name, producer := range p.producers {
 		if producer == nil {
@@ -540,7 +554,6 @@ func (p *PulsarClient) CheckHealth() error {
 	}
 	p.producerMutex.RUnlock()
 
-	// Check consumer status
 	p.consumerMutex.RLock()
 	for name, consumer := range p.consumers {
 		if consumer == nil {
@@ -750,9 +763,28 @@ func (p *PulsarClient) GetClient() pulsar.Client {
 	return p.client
 }
 
-// IsConnected checks if the Pulsar client is connected
+// IsConnected reports whether the Pulsar client is ready and connected.
 func (p *PulsarClient) IsConnected() bool {
-	return !p.closed && p.client != nil && p.connectionManager.IsConnected()
+	if p.closed || p.client == nil {
+		return false
+	}
+	if p.connectionManager != nil {
+		return p.connectionManager.IsConnected()
+	}
+	return true
+}
+
+// GetMetrics returns the current in-process metrics snapshot.
+func (p *PulsarClient) GetMetrics() *Metrics {
+	return p.metrics
+}
+
+// GetHealth returns the current health status of the plugin.
+func (p *PulsarClient) GetHealth() *HealthStatus {
+	if p.healthStatus == nil {
+		return &HealthStatus{}
+	}
+	return p.healthStatus
 }
 
 // GetEnabledProducers returns all enabled producers

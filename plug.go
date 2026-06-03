@@ -36,24 +36,18 @@ func GetPulsarClient() (*PulsarClient, error) {
 	return nil, fmt.Errorf("failed to get Pulsar client: plugin not found or type assertion failed")
 }
 
-// GetPulsarClientByName gets a specific Pulsar client by name if multiple instances are configured.
-// This function provides access to specific client instances when multiple Pulsar configurations are used.
+// GetPulsarClientByName retrieves a registered Pulsar plugin by its plugin name.
+// The go-lynx framework supports a single Pulsar plugin instance identified by
+// pluginName. Pass an empty string or pluginName to get the default client.
 //
-// Parameters:
-//   - name: The name of the Pulsar client instance to retrieve
-//
-// Returns:
-//   - *PulsarClient: The specified Pulsar client instance, or nil if not found
-//   - error: Error if the plugin is not properly initialized or if the plugin manager cannot find the Pulsar plugin.
+// Returns an error when no matching plugin is found or the type assertion fails.
 func GetPulsarClientByName(name string) (*PulsarClient, error) {
-	client, err := GetPulsarClient()
-	if err != nil {
-		return nil, err
+	if name == "" {
+		name = pluginName
 	}
-	if client != nil && client.GetPulsarConfig() != nil {
-		// For now, return the main client since we support single instance
-		// In the future, this could be extended to support multiple named instances
+	plugin := lynx.Lynx().GetPluginManager().GetPlugin(name)
+	if client, ok := plugin.(*PulsarClient); ok && client != nil {
 		return client, nil
 	}
-	return nil, fmt.Errorf("pulsar client not configured")
+	return nil, fmt.Errorf("pulsar client %q not found or type assertion failed", name)
 }
