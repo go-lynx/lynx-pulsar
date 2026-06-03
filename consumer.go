@@ -32,6 +32,11 @@ func (p *PulsarClient) SubscribeWith(ctx context.Context, consumerName string, _
 	}
 
 	go func() {
+		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("pulsar consumer dispatch panic for %s: %v", consumerName, r)
+			}
+		}()
 		for {
 			select {
 			case <-ctx.Done():
@@ -72,6 +77,9 @@ func (p *PulsarClient) SubscribeWithRegex(ctx context.Context, topicsPattern str
 
 	go func() {
 		defer func() {
+			if r := recover(); r != nil {
+				log.Errorf("pulsar regex consumer dispatch panic for %s: %v", name, r)
+			}
 			p.consumerMutex.Lock()
 			delete(p.consumers, name)
 			p.consumerMutex.Unlock()
