@@ -41,7 +41,17 @@ type PulsarClient struct {
 	consumerMutex     sync.RWMutex
 	closeChan         chan struct{}
 	closeOnce         sync.Once // protect against multiple close operations
-	closed            bool
+	// stateMutex guards closed and client against concurrent access from
+	// CheckHealth/IsConnected/SubscribeWithRegex and cleanupWithContext.
+	stateMutex sync.RWMutex
+	closed     bool
+	// recvWG tracks all running receive goroutines so cleanup can wait for
+	// them to drain before closing consumers/producers/client.
+	recvWG sync.WaitGroup
+	// subscriptions maps a consumer name to the cancel func of its active
+	// receive loop, used to prevent two goroutines draining the same
+	// consumer.Chan() (split stream / competing Ack).
+	subscriptions map[string]context.CancelFunc
 	metrics           *Metrics
 	prom              *promMetrics
 	healthStatus      *HealthStatus
@@ -54,10 +64,11 @@ type PulsarClient struct {
 func NewPulsarClient() *PulsarClient {
 	c := &PulsarClient{
 		config:       defaultPulsarConfig(),
-		producers:    make(map[string]pulsar.Producer),
-		consumers:    make(map[string]pulsar.Consumer),
-		closeChan:    make(chan struct{}),
-		closed:       false,
+		producers:     make(map[string]pulsar.Producer),
+		consumers:     make(map[string]pulsar.Consumer),
+		subscriptions: make(map[string]context.CancelFunc),
+		closeChan:     make(chan struct{}),
+		closed:        false,
 		metrics:      &Metrics{},
 		prom:         newPromMetrics(prometheus.DefaultRegisterer),
 		healthStatus: &HealthStatus{},
@@ -146,6 +157,80 @@ func clonePulsarConfig(cfg *conf.Pulsar) *conf.Pulsar {
 		return nil
 	}
 	return cloned
+}
+
+// setClient stores the underlying Pulsar client under the state lock.
+func (p *PulsarClient) setClient(client pulsar.Client) {
+	p.stateMutex.Lock()
+	p.client = client
+	p.stateMutex.Unlock()
+}
+
+// getClient returns the underlying Pulsar client under the state lock.
+func (p *PulsarClient) getClient() pulsar.Client {
+	p.stateMutex.RLock()
+	defer p.stateMutex.RUnlock()
+	return p.client
+}
+
+// isClosed reports whether the plugin has been shut down, under the state lock.
+func (p *PulsarClient) isClosed() bool {
+	p.stateMutex.RLock()
+	defer p.stateMutex.RUnlock()
+	return p.closed
+}
+
+// stopReceivers signals every active receive loop to stop (without holding any
+// other lock) and waits for all of them to drain. It must be called before any
+// consumer/producer/client is closed so goroutines cannot iterate
+// consumer.Chan() or call Ack/Nack on a closed consumer.
+func (p *PulsarClient) stopReceivers() {
+	p.consumerMutex.Lock()
+	cancels := make([]context.CancelFunc, 0, len(p.subscriptions))
+	for name, cancel := range p.subscriptions {
+		cancels = append(cancels, cancel)
+		delete(p.subscriptions, name)
+	}
+	p.consumerMutex.Unlock()
+
+	for _, cancel := range cancels {
+		cancel()
+	}
+	p.recvWG.Wait()
+}
+
+// closeAllResources tears down consumers, producers and the client. It first
+// stops and awaits all receive goroutines so nothing races with Close(). Safe
+// to call during a failed startup to avoid leaking partially-created resources.
+func (p *PulsarClient) closeAllResources() {
+	p.stopReceivers()
+
+	p.consumerMutex.Lock()
+	for name, consumer := range p.consumers {
+		if consumer != nil {
+			consumer.Close()
+			log.Infof("consumer %s closed", name)
+		}
+	}
+	p.consumers = make(map[string]pulsar.Consumer)
+	p.consumerMutex.Unlock()
+
+	p.producerMutex.Lock()
+	for name, producer := range p.producers {
+		if producer != nil {
+			producer.Close()
+			log.Infof("producer %s closed", name)
+		}
+	}
+	p.producers = make(map[string]pulsar.Producer)
+	p.producerMutex.Unlock()
+
+	p.stateMutex.Lock()
+	if p.client != nil {
+		p.client.Close()
+		p.client = nil
+	}
+	p.stateMutex.Unlock()
 }
 
 // Configure updates Pulsar configuration
@@ -380,24 +465,28 @@ func (p *PulsarClient) startupWithContext(ctx context.Context) error {
 		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to create Pulsar client: %w", err)
 	}
-	p.client = client
+	p.setClient(client)
 	if err := ctx.Err(); err != nil {
+		p.closeAllResources()
 		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("pulsar startup canceled after client creation: %w", err)
 	}
 
 	// Initialize producers
 	if err := p.initializeProducers(); err != nil {
+		p.closeAllResources()
 		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to initialize producers: %w", err)
 	}
 	if err := ctx.Err(); err != nil {
+		p.closeAllResources()
 		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("pulsar startup canceled after producer init: %w", err)
 	}
 
 	// Initialize consumers
 	if err := p.initializeConsumers(); err != nil {
+		p.closeAllResources()
 		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to initialize consumers: %w", err)
 	}
@@ -490,7 +579,9 @@ func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 	p.closeOnce.Do(func() {
 		close(p.closeChan)
 	})
+	p.stateMutex.Lock()
 	p.closed = true
+	p.stateMutex.Unlock()
 
 	// Stop health checker
 	if p.healthChecker != nil {
@@ -502,29 +593,11 @@ func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 		p.connectionManager.Stop()
 	}
 
-	// Close consumers
-	p.consumerMutex.Lock()
-	for name, consumer := range p.consumers {
-		consumer.Close()
-		log.Infof("consumer %s closed", name)
-	}
-	p.consumers = make(map[string]pulsar.Consumer)
-	p.consumerMutex.Unlock()
-
-	// Close producers
-	p.producerMutex.Lock()
-	for name, producer := range p.producers {
-		producer.Close()
-		log.Infof("producer %s closed", name)
-	}
-	p.producers = make(map[string]pulsar.Producer)
-	p.producerMutex.Unlock()
-
-	// Close client
-	if p.client != nil {
-		p.client.Close()
-		p.client = nil
-	}
+	// Stop and await all receive goroutines, then close consumers, producers
+	// and the client. Awaiting the loops first prevents a use-after-close race
+	// where a goroutine iterates consumer.Chan() / calls Ack/Nack on a consumer
+	// that is being closed.
+	p.closeAllResources()
 
 	log.Infof("Apache Pulsar client plugin successfully shut down")
 	return nil
@@ -535,7 +608,7 @@ func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 // reports an active connection. Individual nil producers/consumers are logged
 // as warnings but do not cause the check to fail.
 func (p *PulsarClient) CheckHealth() error {
-	if p.client == nil {
+	if p.getClient() == nil {
 		return fmt.Errorf("pulsar client not initialized")
 	}
 
@@ -668,9 +741,23 @@ func (p *PulsarClient) createProducer(config *conf.Producer) error {
 			options.EnableChunking = true
 			options.ChunkMaxMessageSize = uint(config.Options.ChunkMaxSize)
 		}
+		if config.Options.CompressionType != "" {
+			options.CompressionType = p.parseCompressionType(config.Options.CompressionType)
+		}
+		if config.Options.HashingScheme != "" {
+			options.HashingScheme = p.parseHashingScheme(config.Options.HashingScheme)
+		}
+		// Note: pulsar-client-go v0.19.0 has no MessageRoutingMode field on
+		// ProducerOptions (only a custom MessageRouter func). round_robin vs
+		// single_partition is selected internally based on whether a message
+		// key is set, so the configured routing mode cannot be mapped directly.
 	}
 
-	producer, err := p.client.CreateProducer(options)
+	client := p.getClient()
+	if client == nil {
+		return fmt.Errorf("pulsar client not initialized")
+	}
+	producer, err := client.CreateProducer(options)
 	if err != nil {
 		return err
 	}
@@ -700,18 +787,47 @@ func (p *PulsarClient) createConsumer(config *conf.Consumer) error {
 		if config.Options.SubscriptionInitialPosition != "" {
 			options.SubscriptionInitialPosition = p.parseSubscriptionInitialPosition(config.Options.SubscriptionInitialPosition)
 		}
+		if config.Options.SubscriptionMode != "" {
+			options.SubscriptionMode = p.parseSubscriptionMode(config.Options.SubscriptionMode)
+		}
 		if config.Options.ReceiverQueueSize > 0 {
 			options.ReceiverQueueSize = int(config.Options.ReceiverQueueSize)
 		}
 		if config.Options.NegativeAckDelay != nil {
 			options.NackRedeliveryDelay = config.Options.NegativeAckDelay.AsDuration()
 		}
+		if config.Options.ReadCompacted {
+			options.ReadCompacted = true
+		}
+		// Retry / automatic redelivery via the retry-letter topic. Both
+		// retry_enable and enable_retry_on_message_failure enable the feature.
+		if config.Options.RetryEnable || config.Options.EnableRetryOnMessageFailure {
+			options.RetryEnable = true
+		}
+		// Dead letter policy: route poison messages to a DLQ after the
+		// configured number of redeliveries.
+		if config.Options.DeadLetterPolicy != nil {
+			dlp := config.Options.DeadLetterPolicy
+			options.DLQ = &pulsar.DLQPolicy{
+				MaxDeliveries:           uint32(dlp.MaxRedeliverCount),
+				DeadLetterTopic:         dlp.DeadLetterTopic,
+				InitialSubscriptionName: dlp.InitialSubscriptionName,
+			}
+		}
+		// Note: CryptoFailureAction is only meaningful alongside a configured
+		// message decryptor (Decryption.MessageCrypto). Since no key reader /
+		// MessageCrypto is configured here, it cannot be wired in isolation
+		// without breaking decryption; it is validated but not applied.
 		if config.Options.Properties != nil {
 			options.Properties = config.Options.Properties
 		}
 	}
 
-	consumer, err := p.client.Subscribe(options)
+	client := p.getClient()
+	if client == nil {
+		return fmt.Errorf("pulsar client not initialized")
+	}
+	consumer, err := client.Subscribe(options)
 	if err != nil {
 		return err
 	}
@@ -741,6 +857,48 @@ func (p *PulsarClient) parseSubscriptionType(subType string) pulsar.Subscription
 	}
 }
 
+// parseSubscriptionMode parses subscription mode string to Pulsar mode.
+func (p *PulsarClient) parseSubscriptionMode(mode string) pulsar.SubscriptionMode {
+	switch mode {
+	case "durable":
+		return pulsar.Durable
+	case "non_durable":
+		return pulsar.NonDurable
+	default:
+		return pulsar.Durable
+	}
+}
+
+// parseCompressionType maps a compression type string to the Pulsar enum.
+func (p *PulsarClient) parseCompressionType(ct string) pulsar.CompressionType {
+	switch ct {
+	case "none":
+		return pulsar.NoCompression
+	case "lz4":
+		return pulsar.LZ4
+	case "zlib":
+		return pulsar.ZLib
+	case "zstd":
+		return pulsar.ZSTD
+	case "snappy":
+		return pulsar.SNAPPY
+	default:
+		return pulsar.NoCompression
+	}
+}
+
+// parseHashingScheme maps a hashing scheme string to the Pulsar enum.
+func (p *PulsarClient) parseHashingScheme(hs string) pulsar.HashingScheme {
+	switch hs {
+	case "java_string_hash":
+		return pulsar.JavaStringHash
+	case "murmur3_32hash":
+		return pulsar.Murmur3_32Hash
+	default:
+		return pulsar.JavaStringHash
+	}
+}
+
 // parseSubscriptionInitialPosition parses subscription initial position
 func (p *PulsarClient) parseSubscriptionInitialPosition(pos string) pulsar.SubscriptionInitialPosition {
 	switch pos {
@@ -760,12 +918,16 @@ func (p *PulsarClient) GetPulsarConfig() *conf.Pulsar {
 
 // GetClient returns the underlying Pulsar client
 func (p *PulsarClient) GetClient() pulsar.Client {
-	return p.client
+	return p.getClient()
 }
 
 // IsConnected reports whether the Pulsar client is ready and connected.
 func (p *PulsarClient) IsConnected() bool {
-	if p.closed || p.client == nil {
+	p.stateMutex.RLock()
+	closed := p.closed
+	client := p.client
+	p.stateMutex.RUnlock()
+	if closed || client == nil {
 		return false
 	}
 	if p.connectionManager != nil {
