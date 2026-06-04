@@ -1,6 +1,6 @@
 # Apache Pulsar Plugin
 
-The Apache Pulsar Plugin is a comprehensive message queue integration plugin for the Lynx framework. It provides full support for Apache Pulsar, a high-performance, distributed messaging and streaming platform that combines the best features of traditional message queues and streaming systems.
+The Apache Pulsar Plugin integrates Apache Pulsar into the Lynx framework. It manages multiple named producer and consumer instances with batching, compression, retry-letter and dead-letter handling, TLS and token/OAuth2/TLS authentication, Prometheus metrics, and graceful shutdown.
 
 ## Features
 

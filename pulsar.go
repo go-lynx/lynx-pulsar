@@ -32,15 +32,15 @@ const (
 // PulsarClient represents the main Pulsar client plugin instance.
 type PulsarClient struct {
 	*plugins.BasePlugin
-	config            *conf.Pulsar
-	rt                plugins.Runtime
-	client            pulsar.Client
-	producers         map[string]pulsar.Producer
-	consumers         map[string]pulsar.Consumer
-	producerMutex     sync.RWMutex
-	consumerMutex     sync.RWMutex
-	closeChan         chan struct{}
-	closeOnce         sync.Once // protect against multiple close operations
+	config        *conf.Pulsar
+	rt            plugins.Runtime
+	client        pulsar.Client
+	producers     map[string]pulsar.Producer
+	consumers     map[string]pulsar.Consumer
+	producerMutex sync.RWMutex
+	consumerMutex sync.RWMutex
+	closeChan     chan struct{}
+	closeOnce     sync.Once // protect against multiple close operations
 	// stateMutex guards closed and client against concurrent access from
 	// CheckHealth/IsConnected/SubscribeWithRegex and cleanupWithContext.
 	stateMutex sync.RWMutex
@@ -51,7 +51,7 @@ type PulsarClient struct {
 	// subscriptions maps a consumer name to the cancel func of its active
 	// receive loop, used to prevent two goroutines draining the same
 	// consumer.Chan() (split stream / competing Ack).
-	subscriptions map[string]context.CancelFunc
+	subscriptions     map[string]context.CancelFunc
 	metrics           *Metrics
 	prom              *promMetrics
 	healthStatus      *HealthStatus
@@ -60,18 +60,17 @@ type PulsarClient struct {
 	retryManager      *RetryManager
 }
 
-// NewPulsarClient creates a new Pulsar client plugin instance.
 func NewPulsarClient() *PulsarClient {
 	c := &PulsarClient{
-		config:       defaultPulsarConfig(),
+		config:        defaultPulsarConfig(),
 		producers:     make(map[string]pulsar.Producer),
 		consumers:     make(map[string]pulsar.Consumer),
 		subscriptions: make(map[string]context.CancelFunc),
 		closeChan:     make(chan struct{}),
 		closed:        false,
-		metrics:      &Metrics{},
-		prom:         newPromMetrics(prometheus.DefaultRegisterer),
-		healthStatus: &HealthStatus{},
+		metrics:       &Metrics{},
+		prom:          newPromMetrics(prometheus.DefaultRegisterer),
+		healthStatus:  &HealthStatus{},
 	}
 
 	c.BasePlugin = plugins.NewBasePlugin(
@@ -233,7 +232,8 @@ func (p *PulsarClient) closeAllResources() {
 	p.stateMutex.Unlock()
 }
 
-// Configure updates Pulsar configuration
+// Configure validates and applies a *conf.Pulsar, normalizing defaults; other
+// types yield ErrInvalidConfiguration.
 func (p *PulsarClient) Configure(c any) error {
 	if pulsarConf, ok := c.(*conf.Pulsar); ok {
 		normalized := clonePulsarConfig(pulsarConf)
@@ -249,9 +249,9 @@ func (p *PulsarClient) Configure(c any) error {
 	return plugins.ErrInvalidConfiguration
 }
 
-// InitializeResources initializes the plugin with configuration
+// InitializeResources loads config (omitted fields keep production-safe
+// defaults), normalizes it, and constructs the health/connection/retry managers.
 func (p *PulsarClient) InitializeResources(rt plugins.Runtime) error {
-	// Initialize base plugin
 	if err := p.BasePlugin.InitializeResources(rt); err != nil {
 		return err
 	}
@@ -269,7 +269,6 @@ func (p *PulsarClient) InitializeResources(rt plugins.Runtime) error {
 	}
 	p.config = cfg
 
-	// Initialize managers
 	if p.config.Monitoring != nil {
 		p.healthChecker = NewHealthChecker(p.config.Monitoring.HealthCheckInterval.AsDuration())
 	}
@@ -446,7 +445,8 @@ func normalizePulsarConfig(cfg *conf.Pulsar) error {
 	return nil
 }
 
-// StartupTasks initializes Pulsar client and performs health check
+// StartupTasks creates the client, producers, and consumers, starts the health
+// and connection managers, registers runtime resources, and verifies health.
 func (p *PulsarClient) StartupTasks() error {
 	return p.startupWithContext(context.Background())
 }
@@ -458,7 +458,6 @@ func (p *PulsarClient) startupWithContext(ctx context.Context) error {
 	}
 	p.publishRuntimeContract(false, false)
 
-	// Create Pulsar client
 	clientOptions := p.buildClientOptions()
 	client, err := pulsar.NewClient(clientOptions)
 	if err != nil {
@@ -472,7 +471,6 @@ func (p *PulsarClient) startupWithContext(ctx context.Context) error {
 		return fmt.Errorf("pulsar startup canceled after client creation: %w", err)
 	}
 
-	// Initialize producers
 	if err := p.initializeProducers(); err != nil {
 		p.closeAllResources()
 		p.publishRuntimeContract(false, false)
@@ -484,19 +482,16 @@ func (p *PulsarClient) startupWithContext(ctx context.Context) error {
 		return fmt.Errorf("pulsar startup canceled after producer init: %w", err)
 	}
 
-	// Initialize consumers
 	if err := p.initializeConsumers(); err != nil {
 		p.closeAllResources()
 		p.publishRuntimeContract(false, false)
 		return fmt.Errorf("failed to initialize consumers: %w", err)
 	}
 
-	// Start health checker
 	if p.config.Monitoring != nil && p.config.Monitoring.EnableHealthCheck && p.healthChecker != nil {
 		p.healthChecker.Start()
 	}
 
-	// Start connection manager
 	if p.connectionManager != nil {
 		p.connectionManager.Start()
 	}
@@ -575,7 +570,7 @@ func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 	}
 	p.publishRuntimeContract(false, false)
 
-	// Signal background tasks to stop (protected against multiple calls)
+	// closeOnce guards against a double close of closeChan.
 	p.closeOnce.Do(func() {
 		close(p.closeChan)
 	})
@@ -583,12 +578,10 @@ func (p *PulsarClient) cleanupWithContext(ctx context.Context) error {
 	p.closed = true
 	p.stateMutex.Unlock()
 
-	// Stop health checker
 	if p.healthChecker != nil {
 		p.healthChecker.Stop()
 	}
 
-	// Stop connection manager
 	if p.connectionManager != nil {
 		p.connectionManager.Stop()
 	}
@@ -638,7 +631,8 @@ func (p *PulsarClient) CheckHealth() error {
 	return nil
 }
 
-// buildClientOptions builds Pulsar client options from configuration
+// buildClientOptions translates config into pulsar.ClientOptions, wiring
+// connection tuning, TLS, and the selected authentication method.
 func (p *PulsarClient) buildClientOptions() pulsar.ClientOptions {
 	options := pulsar.ClientOptions{
 		URL: p.config.ServiceUrl,
@@ -694,7 +688,7 @@ func (p *PulsarClient) buildClientOptions() pulsar.ClientOptions {
 	return options
 }
 
-// initializeProducers initializes all configured producers
+// initializeProducers creates every enabled producer, failing fast on error.
 func (p *PulsarClient) initializeProducers() error {
 	for _, producerConfig := range p.GetEnabledProducers() {
 		if err := p.createProducer(producerConfig); err != nil {
@@ -704,7 +698,7 @@ func (p *PulsarClient) initializeProducers() error {
 	return nil
 }
 
-// initializeConsumers initializes all configured consumers
+// initializeConsumers creates every enabled consumer, failing fast on error.
 func (p *PulsarClient) initializeConsumers() error {
 	for _, consumerConfig := range p.GetEnabledConsumers() {
 		if err := p.createConsumer(consumerConfig); err != nil {
@@ -714,7 +708,8 @@ func (p *PulsarClient) initializeConsumers() error {
 	return nil
 }
 
-// createProducer creates a Pulsar producer
+// createProducer builds a producer from config (batching, chunking,
+// compression, hashing) and registers it under its name.
 func (p *PulsarClient) createProducer(config *conf.Producer) error {
 	options := pulsar.ProducerOptions{
 		Topic: config.Topic,
@@ -770,7 +765,8 @@ func (p *PulsarClient) createProducer(config *conf.Producer) error {
 	return nil
 }
 
-// createConsumer creates a Pulsar consumer
+// createConsumer subscribes a consumer from config (subscription type/mode,
+// nack delay, retry-letter, DLQ) and registers it under its name.
 func (p *PulsarClient) createConsumer(config *conf.Consumer) error {
 	options := pulsar.ConsumerOptions{
 		Topics:           config.Topics,
@@ -841,7 +837,6 @@ func (p *PulsarClient) createConsumer(config *conf.Consumer) error {
 	return nil
 }
 
-// parseSubscriptionType parses subscription type string to Pulsar type
 func (p *PulsarClient) parseSubscriptionType(subType string) pulsar.SubscriptionType {
 	switch subType {
 	case "exclusive":
@@ -857,7 +852,6 @@ func (p *PulsarClient) parseSubscriptionType(subType string) pulsar.Subscription
 	}
 }
 
-// parseSubscriptionMode parses subscription mode string to Pulsar mode.
 func (p *PulsarClient) parseSubscriptionMode(mode string) pulsar.SubscriptionMode {
 	switch mode {
 	case "durable":
@@ -869,7 +863,6 @@ func (p *PulsarClient) parseSubscriptionMode(mode string) pulsar.SubscriptionMod
 	}
 }
 
-// parseCompressionType maps a compression type string to the Pulsar enum.
 func (p *PulsarClient) parseCompressionType(ct string) pulsar.CompressionType {
 	switch ct {
 	case "none":
@@ -887,7 +880,6 @@ func (p *PulsarClient) parseCompressionType(ct string) pulsar.CompressionType {
 	}
 }
 
-// parseHashingScheme maps a hashing scheme string to the Pulsar enum.
 func (p *PulsarClient) parseHashingScheme(hs string) pulsar.HashingScheme {
 	switch hs {
 	case "java_string_hash":
@@ -899,7 +891,6 @@ func (p *PulsarClient) parseHashingScheme(hs string) pulsar.HashingScheme {
 	}
 }
 
-// parseSubscriptionInitialPosition parses subscription initial position
 func (p *PulsarClient) parseSubscriptionInitialPosition(pos string) pulsar.SubscriptionInitialPosition {
 	switch pos {
 	case "earliest":
@@ -911,12 +902,11 @@ func (p *PulsarClient) parseSubscriptionInitialPosition(pos string) pulsar.Subsc
 	}
 }
 
-// GetPulsarConfig returns the current Pulsar configuration
 func (p *PulsarClient) GetPulsarConfig() *conf.Pulsar {
 	return p.config
 }
 
-// GetClient returns the underlying Pulsar client
+// GetClient returns the underlying Pulsar client.
 func (p *PulsarClient) GetClient() pulsar.Client {
 	return p.getClient()
 }
@@ -949,7 +939,7 @@ func (p *PulsarClient) GetHealth() *HealthStatus {
 	return p.healthStatus
 }
 
-// GetEnabledProducers returns all enabled producers
+// GetEnabledProducers returns the configured producers with Enabled set.
 func (p *PulsarClient) GetEnabledProducers() []*conf.Producer {
 	var enabled []*conf.Producer
 	for _, producer := range p.config.Producers {
@@ -960,7 +950,7 @@ func (p *PulsarClient) GetEnabledProducers() []*conf.Producer {
 	return enabled
 }
 
-// GetEnabledConsumers returns all enabled consumers
+// GetEnabledConsumers returns the configured consumers with Enabled set.
 func (p *PulsarClient) GetEnabledConsumers() []*conf.Consumer {
 	var enabled []*conf.Consumer
 	for _, consumer := range p.config.Consumers {

@@ -7,28 +7,17 @@ import (
 	"github.com/go-lynx/lynx/plugins"
 )
 
-// init function registers the Apache Pulsar plugin to the global plugin factory.
-// This function is automatically called when the package is imported.
-// It creates a new PulsarClient instance and registers it to the plugin factory with the configured plugin name and configuration prefix.
+// init registers the Pulsar plugin with the global factory on import so the
+// plugin manager can discover and load it.
 func init() {
-	// Call the RegisterPlugin method of the global plugin factory for plugin registration
-	// Pass in the plugin name, configuration prefix, and a function that returns a plugins.Plugin interface instance
 	factory.GlobalTypedFactory().RegisterPlugin(pluginName, confPrefix, func() plugins.Plugin {
-		// Create and return a new PulsarClient instance
 		return NewPulsarClient()
 	})
 }
 
-// GetPulsarClient gets the Apache Pulsar client instance from the plugin manager.
-// This function provides access to the underlying Pulsar client for other parts of the application
-// that may need to use message queue functionality.
-//
-// Returns:
-//   - *PulsarClient: Configured Apache Pulsar client instance
-//   - error: Error if the plugin is not properly initialized or if the plugin manager cannot find the Pulsar plugin.
+// GetPulsarClient returns the registered Pulsar plugin from the plugin manager,
+// or an error if it is absent or of the wrong type.
 func GetPulsarClient() (*PulsarClient, error) {
-	// Get the plugin with the specified name from the application's plugin manager,
-	// convert it to *PulsarClient type, and return it
 	plugin := lynx.Lynx().GetPluginManager().GetPlugin(pluginName)
 	if client, ok := plugin.(*PulsarClient); ok && client != nil {
 		return client, nil

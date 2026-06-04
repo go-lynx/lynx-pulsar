@@ -8,7 +8,8 @@ import (
 	"github.com/go-lynx/lynx/log"
 )
 
-// HealthChecker represents a health checker for Pulsar client
+// HealthChecker runs a periodic background health probe and records the latest
+// result for CheckHealth/metrics to read.
 type HealthChecker struct {
 	interval   time.Duration
 	stopChan   chan struct{}
@@ -21,7 +22,7 @@ type HealthChecker struct {
 	stopped    bool
 }
 
-// NewHealthChecker creates a new health checker
+// NewHealthChecker creates a checker that probes every interval, starting healthy.
 func NewHealthChecker(interval time.Duration) *HealthChecker {
 	return &HealthChecker{
 		interval: interval,
@@ -30,12 +31,12 @@ func NewHealthChecker(interval time.Duration) *HealthChecker {
 	}
 }
 
-// Start starts the health checker
+// Start launches the probe loop in a background goroutine.
 func (h *HealthChecker) Start() {
 	go h.run()
 }
 
-// Stop stops the health checker
+// Stop halts the probe loop; safe to call more than once.
 func (h *HealthChecker) Stop() {
 	h.mu.Lock()
 	stopped := h.stopped
@@ -51,35 +52,30 @@ func (h *HealthChecker) Stop() {
 	}
 }
 
-// IsHealthy returns the health status
 func (h *HealthChecker) IsHealthy() bool {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.healthy
 }
 
-// GetLastCheck returns the last check time
 func (h *HealthChecker) GetLastCheck() time.Time {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.lastCheck
 }
 
-// GetErrorCount returns the error count
 func (h *HealthChecker) GetErrorCount() int {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.errorCount
 }
 
-// GetLastError returns the last error
 func (h *HealthChecker) GetLastError() error {
 	h.mu.RLock()
 	defer h.mu.RUnlock()
 	return h.lastError
 }
 
-// run runs the health check loop
 func (h *HealthChecker) run() {
 	ticker := time.NewTicker(h.interval)
 	defer ticker.Stop()
@@ -94,18 +90,18 @@ func (h *HealthChecker) run() {
 	}
 }
 
-// performHealthCheck performs a health check
+// performHealthCheck is a placeholder probe that currently always reports
+// healthy; a real implementation would ping the broker here.
 func (h *HealthChecker) performHealthCheck() {
 	h.mu.Lock()
 	defer h.mu.Unlock()
 
 	h.lastCheck = time.Now()
-	// Simple health check - in a real implementation, this would check Pulsar connectivity
 	h.healthy = true
 	h.lastError = nil
 }
 
-// ConnectionManager represents a connection manager for Pulsar client
+// ConnectionManager tracks a best-effort connected flag for the Pulsar client.
 type ConnectionManager struct {
 	config    *conf.Connection
 	connected bool
@@ -115,7 +111,6 @@ type ConnectionManager struct {
 	stopped   bool
 }
 
-// NewConnectionManager creates a new connection manager
 func NewConnectionManager(config *conf.Connection) *ConnectionManager {
 	return &ConnectionManager{
 		config:    config,
@@ -124,7 +119,7 @@ func NewConnectionManager(config *conf.Connection) *ConnectionManager {
 	}
 }
 
-// Start starts the connection manager
+// Start marks the connection active.
 func (c *ConnectionManager) Start() {
 	c.mu.Lock()
 	c.connected = true
@@ -132,7 +127,7 @@ func (c *ConnectionManager) Start() {
 	log.Infof("Pulsar connection manager started")
 }
 
-// Stop stops the connection manager
+// Stop marks the connection inactive; safe to call more than once.
 func (c *ConnectionManager) Stop() {
 	c.mu.Lock()
 	c.connected = false
@@ -152,7 +147,6 @@ func (c *ConnectionManager) Stop() {
 	log.Infof("Pulsar connection manager stopped")
 }
 
-// IsConnected returns the connection status
 func (c *ConnectionManager) IsConnected() bool {
 	c.mu.RLock()
 	defer c.mu.RUnlock()
@@ -174,7 +168,7 @@ func (c *ConnectionManager) GetConnectionStats() map[string]any {
 	}
 }
 
-// Reconnect attempts to reconnect
+// Reconnect re-marks the connection active.
 func (c *ConnectionManager) Reconnect() error {
 	c.mu.Lock()
 	defer c.mu.Unlock()
@@ -191,7 +185,6 @@ type RetryManager struct {
 	mu     sync.RWMutex
 }
 
-// NewRetryManager creates a new retry manager.
 func NewRetryManager(config *conf.Retry) *RetryManager {
 	return &RetryManager{
 		config: config,
@@ -199,7 +192,8 @@ func NewRetryManager(config *conf.Retry) *RetryManager {
 	}
 }
 
-// ShouldRetry determines if operation should be retried
+// ShouldRetry reports whether another attempt is allowed: retries must be
+// enabled and attempt must be below MaxAttempts.
 func (r *RetryManager) ShouldRetry(attempt int, err error) bool {
 	if !r.config.Enable {
 		return false
@@ -207,7 +201,8 @@ func (r *RetryManager) ShouldRetry(attempt int, err error) bool {
 	return attempt < int(r.config.MaxAttempts)
 }
 
-// GetRetryDelay gets retry delay for attempt
+// GetRetryDelay returns the backoff for the given attempt: InitialDelay scaled
+// by RetryDelayMultiplier per attempt, capped at MaxDelay.
 func (r *RetryManager) GetRetryDelay(attempt int) time.Duration {
 	if attempt <= 0 {
 		return r.config.InitialDelay.AsDuration()
