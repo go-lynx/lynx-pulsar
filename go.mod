@@ -7,7 +7,8 @@ toolchain go1.26.2
 require (
 	github.com/apache/pulsar-client-go v0.19.0
 	github.com/go-kratos/kratos/v2 v2.9.2
-	github.com/go-lynx/lynx v1.6.1
+	github.com/go-lynx/lynx v1.6.2
+	github.com/prometheus/client_golang v1.23.0
 	google.golang.org/protobuf v1.36.10
 )
 
@@ -48,7 +49,6 @@ require (
 	github.com/panjf2000/ants/v2 v2.12.0 // indirect
 	github.com/pierrec/lz4/v4 v4.1.22 // indirect
 	github.com/pkg/errors v0.9.1 // indirect
-	github.com/prometheus/client_golang v1.23.0 // indirect
 	github.com/prometheus/client_model v0.6.2 // indirect
 	github.com/prometheus/common v0.65.0 // indirect
 	github.com/prometheus/procfs v0.16.1 // indirect
