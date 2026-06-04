@@ -21,31 +21,64 @@ func (p *PulsarClient) Subscribe(ctx context.Context, topics []string, handler M
 // triggers a negative acknowledgement (redelivery). Panics inside the handler
 // are recovered and counted as failures.
 func (p *PulsarClient) SubscribeWith(ctx context.Context, consumerName string, _ []string, handler MessageHandler) error {
-	p.consumerMutex.RLock()
-	consumer, ok := p.consumers[consumerName]
-	p.consumerMutex.RUnlock()
-	if !ok || consumer == nil {
-		return fmt.Errorf("pulsar: consumer %q not found", consumerName)
-	}
+	// Note: the topics argument is intentionally ignored. SubscribeWith drives
+	// the pre-created consumer identified by consumerName (whose topics come
+	// from configuration); it does not create ad-hoc subscriptions.
 	if handler == nil {
 		return fmt.Errorf("pulsar: message handler must not be nil")
 	}
+	if p.isClosed() {
+		return fmt.Errorf("pulsar: client is shutting down")
+	}
 
+	p.consumerMutex.Lock()
+	consumer, ok := p.consumers[consumerName]
+	if !ok || consumer == nil {
+		p.consumerMutex.Unlock()
+		return fmt.Errorf("pulsar: consumer %q not found", consumerName)
+	}
+	// Reject a duplicate subscription: a single consumer.Chan() must only be
+	// drained by one goroutine, otherwise the stream is split across loops and
+	// Ack/Nack calls compete.
+	if p.subscriptions == nil {
+		p.subscriptions = make(map[string]context.CancelFunc)
+	}
+	if _, exists := p.subscriptions[consumerName]; exists {
+		p.consumerMutex.Unlock()
+		return fmt.Errorf("pulsar: consumer %q already has an active subscription", consumerName)
+	}
+	loopCtx, cancel := context.WithCancel(ctx)
+	p.subscriptions[consumerName] = cancel
+	p.consumerMutex.Unlock()
+
+	p.recvWG.Add(1)
 	go func() {
+		defer p.recvWG.Done()
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Errorf("pulsar consumer dispatch panic for %s: %v", consumerName, r)
 			}
+			p.consumerMutex.Lock()
+			if p.subscriptions != nil && p.subscriptions[consumerName] != nil {
+				delete(p.subscriptions, consumerName)
+			}
+			p.consumerMutex.Unlock()
 		}()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-p.closeChan:
+				return
+			case <-loopCtx.Done():
 				return
 			case msg, open := <-consumer.Chan():
 				if !open {
 					return
 				}
-				p.dispatchMessage(ctx, consumer, consumerName, msg, handler)
+				if p.isClosed() {
+					return
+				}
+				p.dispatchMessage(loopCtx, consumer, consumerName, msg, handler)
 			}
 		}
 	}()
@@ -55,14 +88,18 @@ func (p *PulsarClient) SubscribeWith(ctx context.Context, consumerName string, _
 // SubscribeWithRegex creates a push-consumer that matches topics by a regular
 // expression pattern and starts the same receive loop as SubscribeWith.
 func (p *PulsarClient) SubscribeWithRegex(ctx context.Context, topicsPattern string, handler MessageHandler) error {
-	if p.client == nil {
-		return fmt.Errorf("pulsar: client not initialised")
-	}
 	if handler == nil {
 		return fmt.Errorf("pulsar: message handler must not be nil")
 	}
+	if p.isClosed() {
+		return fmt.Errorf("pulsar: client is shutting down")
+	}
+	client := p.getClient()
+	if client == nil {
+		return fmt.Errorf("pulsar: client not initialised")
+	}
 
-	consumer, err := p.client.Subscribe(pulsarlib.ConsumerOptions{
+	consumer, err := client.Subscribe(pulsarlib.ConsumerOptions{
 		TopicsPattern:    topicsPattern,
 		SubscriptionName: "lynx-regex-subscription",
 	})
@@ -71,28 +108,48 @@ func (p *PulsarClient) SubscribeWithRegex(ctx context.Context, topicsPattern str
 	}
 
 	name := "regex:" + topicsPattern
+	loopCtx, cancel := context.WithCancel(ctx)
 	p.consumerMutex.Lock()
+	if p.subscriptions == nil {
+		p.subscriptions = make(map[string]context.CancelFunc)
+	}
+	if _, exists := p.subscriptions[name]; exists {
+		p.consumerMutex.Unlock()
+		cancel()
+		consumer.Close()
+		return fmt.Errorf("pulsar: regex subscription %q already active", topicsPattern)
+	}
 	p.consumers[name] = consumer
+	p.subscriptions[name] = cancel
 	p.consumerMutex.Unlock()
 
+	p.recvWG.Add(1)
 	go func() {
+		defer p.recvWG.Done()
+		defer cancel()
 		defer func() {
 			if r := recover(); r != nil {
 				log.Errorf("pulsar regex consumer dispatch panic for %s: %v", name, r)
 			}
 			p.consumerMutex.Lock()
 			delete(p.consumers, name)
+			delete(p.subscriptions, name)
 			p.consumerMutex.Unlock()
 		}()
 		for {
 			select {
-			case <-ctx.Done():
+			case <-p.closeChan:
+				return
+			case <-loopCtx.Done():
 				return
 			case msg, open := <-consumer.Chan():
 				if !open {
 					return
 				}
-				p.dispatchMessage(ctx, consumer, name, msg, handler)
+				if p.isClosed() {
+					return
+				}
+				p.dispatchMessage(loopCtx, consumer, name, msg, handler)
 			}
 		}
 	}()
