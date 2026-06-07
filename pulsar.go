@@ -24,7 +24,7 @@ import (
 // Plugin metadata constants
 const (
 	pluginName        = "pulsar.client"
-	pluginVersion     = "v1.6.1"
+	pluginVersion     = "v1.6.3"
 	pluginDescription = "Apache Pulsar client plugin for lynx framework"
 	confPrefix        = "lynx.pulsar"
 )
