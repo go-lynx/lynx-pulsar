@@ -25,28 +25,28 @@ func newTestClient() *PulsarClient {
 // stubMessage implements pulsarlib.Message (only Topic() matters for tests).
 type stubMessage struct{ topic string }
 
-func (m *stubMessage) Topic() string                                          { return m.topic }
-func (m *stubMessage) Properties() map[string]string                          { return nil }
-func (m *stubMessage) Payload() []byte                                        { return nil }
-func (m *stubMessage) ID() pulsarlib.MessageID                                { return nil }
-func (m *stubMessage) PublishTime() time.Time                                 { return time.Time{} }
-func (m *stubMessage) EventTime() time.Time                                   { return time.Time{} }
-func (m *stubMessage) Key() string                                            { return "" }
-func (m *stubMessage) OrderingKey() string                                    { return "" }
-func (m *stubMessage) GetSchemaValue(_ interface{}) error                     { return nil }
-func (m *stubMessage) ProducerName() string                                   { return "" }
-func (m *stubMessage) SequenceID() int64                                      { return 0 }
-func (m *stubMessage) IsReplicated() bool                                     { return false }
-func (m *stubMessage) GetReplicatedFrom() string                              { return "" }
-func (m *stubMessage) GetReplicationClusters() []string                       { return nil }
-func (m *stubMessage) RedeliveryCount() uint32                                { return 0 }
-func (m *stubMessage) IsEncrypted() bool                                      { return false }
-func (m *stubMessage) GetEncryptionContext() *pulsarlib.EncryptionContext      { return nil }
-func (m *stubMessage) Index() *uint64                                         { return nil }
-func (m *stubMessage) BrokerPublishTime() *time.Time                          { return nil }
-func (m *stubMessage) HasNumMessagesInBatch() bool                            { return false }
-func (m *stubMessage) NumMessagesInBatch() int32                              { return 0 }
-func (m *stubMessage) SchemaVersion() []byte                                  { return nil }
+func (m *stubMessage) Topic() string                                      { return m.topic }
+func (m *stubMessage) Properties() map[string]string                      { return nil }
+func (m *stubMessage) Payload() []byte                                    { return nil }
+func (m *stubMessage) ID() pulsarlib.MessageID                            { return nil }
+func (m *stubMessage) PublishTime() time.Time                             { return time.Time{} }
+func (m *stubMessage) EventTime() time.Time                               { return time.Time{} }
+func (m *stubMessage) Key() string                                        { return "" }
+func (m *stubMessage) OrderingKey() string                                { return "" }
+func (m *stubMessage) GetSchemaValue(_ interface{}) error                 { return nil }
+func (m *stubMessage) ProducerName() string                               { return "" }
+func (m *stubMessage) SequenceID() int64                                  { return 0 }
+func (m *stubMessage) IsReplicated() bool                                 { return false }
+func (m *stubMessage) GetReplicatedFrom() string                          { return "" }
+func (m *stubMessage) GetReplicationClusters() []string                   { return nil }
+func (m *stubMessage) RedeliveryCount() uint32                            { return 0 }
+func (m *stubMessage) IsEncrypted() bool                                  { return false }
+func (m *stubMessage) GetEncryptionContext() *pulsarlib.EncryptionContext { return nil }
+func (m *stubMessage) Index() *uint64                                     { return nil }
+func (m *stubMessage) BrokerPublishTime() *time.Time                      { return nil }
+func (m *stubMessage) HasNumMessagesInBatch() bool                        { return false }
+func (m *stubMessage) NumMessagesInBatch() int32                          { return 0 }
+func (m *stubMessage) SchemaVersion() []byte                              { return nil }
 
 // ---- invokeHandler tests (tests panic recovery + metrics) ---------------
 

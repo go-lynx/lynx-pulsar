@@ -978,11 +978,11 @@ func (s *stubProducer) SendAsync(_ context.Context, msg *pulsarlib.ProducerMessa
 		go cb(nil, msg, s.sendErr)
 	}
 }
-func (s *stubProducer) LastSequenceID() int64                                        { return 0 }
-func (s *stubProducer) Flush() error                                                  { return nil }
-func (s *stubProducer) FlushWithCtx(_ context.Context) error                          { return nil }
-func (s *stubProducer) Close()                                                        {}
-func (s *stubProducer) Schema() pulsarlib.Schema                                      { return nil }
+func (s *stubProducer) LastSequenceID() int64                { return 0 }
+func (s *stubProducer) Flush() error                         { return nil }
+func (s *stubProducer) FlushWithCtx(_ context.Context) error { return nil }
+func (s *stubProducer) Close()                               {}
+func (s *stubProducer) Schema() pulsarlib.Schema             { return nil }
 
 // stubConsumer implements pulsar.Consumer for testing.
 type stubConsumer struct {
@@ -1017,10 +1017,10 @@ func (s *stubConsumer) Ack(msg pulsarlib.Message) error {
 	s.ackCount++
 	return nil
 }
-func (s *stubConsumer) AckID(_ pulsarlib.MessageID) error { return nil }
-func (s *stubConsumer) ReconsumeLater(_ pulsarlib.Message, _ time.Duration) {}
-func (s *stubConsumer) AckCumulative(_ pulsarlib.Message) error              { return nil }
-func (s *stubConsumer) AckCumulativeID(_ pulsarlib.MessageID) error          { return nil }
+func (s *stubConsumer) AckID(_ pulsarlib.MessageID) error                             { return nil }
+func (s *stubConsumer) ReconsumeLater(_ pulsarlib.Message, _ time.Duration)           {}
+func (s *stubConsumer) AckCumulative(_ pulsarlib.Message) error                       { return nil }
+func (s *stubConsumer) AckCumulativeID(_ pulsarlib.MessageID) error                   { return nil }
 func (s *stubConsumer) AckWithTxn(_ pulsarlib.Message, _ pulsarlib.Transaction) error { return nil }
 func (s *stubConsumer) AckIDWithTxn(_ pulsarlib.MessageID, _ pulsarlib.Transaction) error {
 	return nil
@@ -1031,17 +1031,17 @@ func (s *stubConsumer) AckIDCumulativeWithTxn(_ pulsarlib.MessageID, _ pulsarlib
 func (s *stubConsumer) Nack(msg pulsarlib.Message) {
 	s.nackCount++
 }
-func (s *stubConsumer) NackID(_ pulsarlib.MessageID) {}
-func (s *stubConsumer) Close()                       {}
-func (s *stubConsumer) Name() string                 { return "stub-consumer" }
+func (s *stubConsumer) NackID(_ pulsarlib.MessageID)     {}
+func (s *stubConsumer) Close()                           {}
+func (s *stubConsumer) Name() string                     { return "stub-consumer" }
 func (s *stubConsumer) Seek(_ pulsarlib.MessageID) error { return nil }
 func (s *stubConsumer) SeekByTime(_ time.Time) error     { return nil }
 func (s *stubConsumer) GetLastMessageIDs() ([]pulsarlib.TopicMessageID, error) {
 	return nil, nil
 }
-func (s *stubConsumer) AckIDCumulative(_ pulsarlib.MessageID) error          { return nil }
-func (s *stubConsumer) AckIDList(_ []pulsarlib.MessageID) error              { return nil }
-func (s *stubConsumer) UnsubscribeForce() error                              { return nil }
+func (s *stubConsumer) AckIDCumulative(_ pulsarlib.MessageID) error { return nil }
+func (s *stubConsumer) AckIDList(_ []pulsarlib.MessageID) error     { return nil }
+func (s *stubConsumer) UnsubscribeForce() error                     { return nil }
 func (s *stubConsumer) ReconsumeLaterWithCustomProperties(_ pulsarlib.Message, _ map[string]string, _ time.Duration) {
 }
 func (s *stubConsumer) GetLastMessageID(_ string) (pulsarlib.MessageID, error) { return nil, nil }
